@@ -332,7 +332,7 @@ def main():
         )
         if uploaded:
             pil_img, img_tensor = preprocess_image(uploaded)
-            st.image(pil_img, use_container_width=True)
+            st.image(pil_img, width='stretch')
 
     with col_loc:
         st.markdown('<div class="section-label">Body Location</div>', unsafe_allow_html=True)
@@ -346,14 +346,14 @@ def main():
         loc_idx = BODY_LOCATIONS.index(selected_loc)
         body_map_img = BODY_MAP_IMAGES.get(selected_loc)
         if body_map_img and os.path.exists(body_map_img):
-            st.image(body_map_img, use_container_width=True)
+            st.image(body_map_img, width='stretch')
 
     # ── Classify ──────────────────────────────────────────────────────────────
     st.divider()
     classify = st.button(
         "Classify Wound",
         type="primary",
-        use_container_width=True,
+        width='stretch',
         disabled=(uploaded is None),
     )
 
@@ -386,7 +386,7 @@ def main():
         st.caption(f"Location: {LOCATION_LABELS[selected_loc]}")
 
         st.markdown('<div class="section-label" style="margin-top:1rem;">Class Probabilities</div>', unsafe_allow_html=True)
-        st.plotly_chart(prob_chart(probs, pred_class), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(prob_chart(probs, pred_class), width='stretch', config={"displayModeBar": False})
 
     with res_right:
         st.markdown('<div class="section-label">Grad-CAM · What the model saw</div>', unsafe_allow_html=True)
@@ -396,7 +396,7 @@ def main():
             )
         ).astype(np.float32) / 255.0
         overlay = overlay_gradcam(pil_img, cam_resized)
-        st.image(overlay, use_container_width=True)
+        st.image(overlay, width='stretch')
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
