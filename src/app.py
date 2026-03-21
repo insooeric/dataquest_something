@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from data_loader import WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS
 from train_multimodal import WoundScopeMultimodal
+from train import WoundScopeV2
 from utils import GradCAM, overlay_gradcam
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -140,19 +141,23 @@ def load_model():
     arch = ckpt.get("arch", "efficientnet_b0")
     is_multimodal = "multimodal" in ckpt_path
 
-    if is_multimodal:
+    if arch == "convnext_small":
+        model = WoundScopeV2(arch=arch, num_classes=len(WOUND_CLASSES))
+        target_layer = model.image_branch.stages[-1].blocks[-1].norm
+    elif is_multimodal:
         model = WoundScopeMultimodal(arch=arch, num_classes=len(WOUND_CLASSES))
+        target_layer = model.image_branch.conv_head
     else:
         import torchvision.models as tvm
         import torch.nn as nn
         model = tvm.efficientnet_b0(weights=None)
         model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(WOUND_CLASSES))
+        target_layer = model.features[-1][0]
 
     model.load_state_dict(ckpt["model_state"])
     model.to(device).eval()
 
-    target_layer = (model.image_branch.conv_head if is_multimodal else model.features[-1][0])
-    gradcam = GradCAM(model.image_branch if is_multimodal else model, target_layer)
+    gradcam = GradCAM(model.image_branch if hasattr(model, "image_branch") else model, target_layer)
 
     return model, gradcam, device, is_multimodal
 
