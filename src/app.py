@@ -52,12 +52,12 @@ def ensure_model():
             token=HF_TOKEN or None,
         )
 BODY_MAP_IMAGES = {
-    "head_neck":       "dataset/azh_raw/BodyMap/FrontBody.png",
-    "chest":           "dataset/azh_raw/BodyMap/FrontBody.png",
-    "abdomen":         "dataset/azh_raw/BodyMap/FrontBody.png",
-    "back":            "dataset/azh_raw/BodyMap/BackBody.png",
-    "upper_extremity": "dataset/azh_raw/BodyMap/RightHand.png",
-    "lower_extremity": "dataset/azh_raw/BodyMap/RightLeg.png",
+    "head_neck":       "assets/FrontBody.png",
+    "chest":           "assets/FrontBody.png",
+    "abdomen":         "assets/FrontBody.png",
+    "back":            "assets/BackBody.png",
+    "upper_extremity": "assets/RightHand.png",
+    "lower_extremity": "assets/RightLeg.png",
 }
 
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
@@ -412,7 +412,7 @@ def main():
         st.caption(f"Location: {LOCATION_LABELS[selected_loc]}")
 
         st.markdown('<div class="section-label" style="margin-top:1rem;">Class Probabilities</div>', unsafe_allow_html=True)
-        st.plotly_chart(prob_chart(probs, pred_class), width='stretch', config={"displayModeBar": False})
+        st.plotly_chart(prob_chart(probs, pred_class), width='stretch', config={"displayModeBar": False, "scrollZoom": False, "staticPlot": True})
 
     with res_right:
         st.markdown('<div class="section-label">Grad-CAM · What the model saw</div>', unsafe_allow_html=True)
