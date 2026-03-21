@@ -230,9 +230,12 @@ class GradCAM:
         self.target_layer.register_forward_hook(forward_hook)
         self.target_layer.register_full_backward_hook(backward_hook)
 
-    def generate(self, img_tensor, class_idx=None):
+    def generate(self, img_tensor, loc_tensor=None, class_idx=None):
         self.model.eval()
-        logits = self.model(img_tensor)
+        if loc_tensor is not None:
+            logits = self.model(img_tensor, loc_tensor)
+        else:
+            logits = self.model(img_tensor)
         if isinstance(logits, tuple):
             logits = logits[0]
         if class_idx is None:

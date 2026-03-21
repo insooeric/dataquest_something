@@ -98,7 +98,7 @@ class WoundScope(nn.Module):
 # ── Weighted sampler ────────────────────────────────────────────────────────────
 
 def make_weighted_sampler(dataset):
-    labels      = [WOUND_CLASSES.index(dataset.df.iloc[i]["wound_type"]) for i in range(len(dataset))]
+    labels       = dataset.df["wound_type"].map(WOUND_CLASSES.index).to_numpy()
     class_counts = np.bincount(labels, minlength=len(WOUND_CLASSES))
     weights      = 1.0 / class_counts[labels]
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
@@ -160,8 +160,13 @@ def build_loaders(csv_path, img_root, batch_size, seed=42):
         lambda p: re.sub(r"_\d+\.(jpg|jpeg|png)$", "", p.replace("\\", "/"), flags=re.IGNORECASE)
     )
     bases = df[["_base", "wound_type"]].drop_duplicates("_base")
-    train_bases, temp_bases = train_test_split(bases, test_size=0.30, stratify=bases["wound_type"], random_state=seed)
-    val_bases,   test_bases = train_test_split(temp_bases, test_size=0.50, stratify=temp_bases["wound_type"], random_state=seed)
+
+    def _stratify(frame):
+        counts = frame["wound_type"].value_counts()
+        return frame["wound_type"] if (counts >= 2).all() else None
+
+    train_bases, temp_bases = train_test_split(bases, test_size=0.30, stratify=_stratify(bases), random_state=seed)
+    val_bases,   test_bases = train_test_split(temp_bases, test_size=0.50, stratify=_stratify(temp_bases), random_state=seed)
 
     train_df = df[df["_base"].isin(train_bases["_base"])].drop(columns="_base")
     val_df   = df[df["_base"].isin(val_bases["_base"])].drop(columns="_base")
@@ -292,6 +297,7 @@ def main(args):
 
     for ep in range(args.epochs):
         t0 = time.time()
+        lr_now = optimizer.param_groups[0]["lr"]
         tl, ta = train_one_epoch(model, train_loader, optimizer, wound_criterion, sev_criterion, device)
         vl, va = val_one_epoch(model, val_loader, wound_criterion, sev_criterion, device)
         scheduler.step()
@@ -300,8 +306,6 @@ def main(args):
         train_losses.append(tl)
         val_losses.append(vl)
         val_accs.append(va)
-
-        lr_now = scheduler.get_last_lr()[0]
         print(f"Epoch {ep+1:3d}/{args.epochs}  "
               f"train_loss={tl:.4f} train_acc={ta:.3f}  "
               f"val_loss={vl:.4f} val_acc={va:.3f}  "
