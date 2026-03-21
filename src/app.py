@@ -22,7 +22,7 @@ import torch.nn as nn
 import torchvision.models as tvm
 
 from data_loader import WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS
-from utils import GradCAM, overlay_gradcam
+from utils import GradCAM, ViTGradCAM, overlay_gradcam
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
@@ -34,8 +34,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+V3_CKPT       = "models/woundscope_v3.pth"
 BASELINE_CKPT = "models/baseline_model.pth"
-BODY_MAP_PATH   = "dataset/BodyMapAllRGB.png"
+BODY_MAP_PATH = "dataset/BodyMapAllRGB.png"
+
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+HF_MODEL  = "mistralai/Mistral-7B-Instruct-v0.1"
 
 WOUND_COLORS = {
     "Diabetic": "#FF6B6B",
@@ -117,6 +121,15 @@ st.markdown("""
         margin-bottom: 0.6rem;
     }
 
+    .clinical-note {
+        border-left: 3px solid rgba(255,255,255,0.2);
+        padding: 0.8rem 1rem;
+        border-radius: 0 8px 8px 0;
+        background: rgba(255,255,255,0.04);
+        font-size: 0.88rem;
+        line-height: 1.7;
+    }
+
     hr { margin: 1rem 0; opacity: 0.15; }
 </style>
 """, unsafe_allow_html=True)
@@ -130,23 +143,48 @@ st.markdown("""
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if not os.path.exists(BASELINE_CKPT):
-        return None, None, None, None
+    # Try v3 (ViT multimodal) first, fall back to baseline (ResNet50)
+    if os.path.exists(V3_CKPT):
+        ckpt_path = V3_CKPT
+        use_v3 = True
+    elif os.path.exists(BASELINE_CKPT):
+        ckpt_path = BASELINE_CKPT
+        use_v3 = False
+    else:
+        return None, None, None, None, None
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ckpt = torch.load(BASELINE_CKPT, map_location=device, weights_only=False)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-    model = tvm.resnet50(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, len(WOUND_CLASSES))
-    target_layer = model.layer4[-1]
+    if use_v3:
+        import timm
+        from train_v3 import WoundScopeV3
+        arch = ckpt.get("arch", "vit_small_patch16_224")
+        model = WoundScopeV3(arch=arch, num_classes=len(WOUND_CLASSES))
+        model.load_state_dict(ckpt["model_state"])
+        model.to(device).eval()
+        gradcam = ViTGradCAM(model.backbone)
+        model_name = f"ViT-Small + location · {arch}"
+    else:
+        arch = ckpt.get("arch", "resnet50")
+        model = tvm.resnet50(weights=None)
+        model.fc = nn.Linear(model.fc.in_features, len(WOUND_CLASSES))
+        model.load_state_dict(ckpt["model_state"])
+        model.to(device).eval()
+        gradcam = GradCAM(model, model.layer4[-1])
+        model_name = "ResNet50 (baseline)"
 
-    model.load_state_dict(ckpt["model_state"])
-    model.to(device).eval()
+    return model, gradcam, device, use_v3, model_name
 
-    gradcam = GradCAM(model, target_layer)
 
-    return model, gradcam, device, False
+@st.cache_resource
+def get_hf_client():
+    try:
+        from huggingface_hub import InferenceClient
+        return InferenceClient(token=HF_TOKEN)
+    except ImportError:
+        return None
 
 
 @st.cache_data
@@ -160,26 +198,73 @@ def preprocess_image(file_bytes):
 # Inference
 # ──────────────────────────────────────────────────────────────────────────────
 
-def run_inference(model, img_tensor, loc_idx, device, is_multimodal, gradcam):
+def run_inference(model, img_tensor, loc_idx, device, use_v3, gradcam):
     img_tensor = img_tensor.to(device)
     loc_tensor = torch.tensor([loc_idx], dtype=torch.long).to(device)
 
     with torch.no_grad():
-        logits = model(img_tensor, loc_tensor) if is_multimodal else model(img_tensor)
+        logits = model(img_tensor, loc_tensor) if use_v3 else model(img_tensor)
 
     probs = F.softmax(logits, dim=1).squeeze().cpu().numpy()
     pred_idx = int(probs.argmax())
 
+    # GradCAM needs gradients
     img_tensor = img_tensor.detach().requires_grad_(True)
-    cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
+    if use_v3:
+        # For ViT GradCAM, run through backbone only
+        cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
+    else:
+        cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
 
     return WOUND_CLASSES[pred_idx], float(probs[pred_idx]), probs, cam
 
 
-def get_loc_importance(model):
-    weights = model.loc_embedding.weight.detach().cpu().numpy()
-    norms = np.linalg.norm(weights, axis=1)
-    return {BODY_LOCATIONS[i]: float(norms[i]) for i in range(len(BODY_LOCATIONS))}
+def generate_clinical_note(wound_type, location, confidence, client):
+    """Call HF inference API to generate a clinical summary."""
+    if client is None:
+        return None
+
+    location_label = LOCATION_LABELS.get(location, location)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a concise clinical wound care assistant. "
+                "Provide brief, accurate clinical notes. Do not use bullet points. "
+                "Write in plain paragraph form. 3 sentences maximum."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"A wound classification model detected a {wound_type} wound "
+                f"at the {location_label} with {confidence:.0%} confidence. "
+                f"Write a brief clinical note covering: typical characteristics of this wound type, "
+                f"key assessment considerations for this body location, and general care priorities."
+            ),
+        },
+    ]
+
+    try:
+        response = client.chat_completion(
+            messages=messages,
+            model=HF_MODEL,
+            max_tokens=180,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        # Try smaller fallback model
+        try:
+            response = client.chat_completion(
+                messages=messages,
+                model="HuggingFaceH4/zephyr-7b-beta",
+                max_tokens=180,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -213,33 +298,6 @@ def prob_chart(probs, pred_class):
     return fig
 
 
-def loc_chart(importance, selected_loc):
-    labels = [LOCATION_LABELS[k] for k in BODY_LOCATIONS]
-    values = [importance.get(k, 0) for k in BODY_LOCATIONS]
-    sel_label = LOCATION_LABELS[selected_loc]
-    colors = [
-        "rgba(255,255,255,0.7)" if l == sel_label else "rgba(255,255,255,0.2)"
-        for l in labels
-    ]
-    fig = go.Figure(go.Bar(
-        x=values,
-        y=labels,
-        orientation="h",
-        marker_color=colors,
-        hoverinfo="skip",
-    ))
-    fig.update_layout(
-        margin=dict(l=0, r=20, t=4, b=4),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(visible=False),
-        yaxis=dict(tickfont=dict(size=12), autorange="reversed"),
-        height=200,
-        showlegend=False,
-    )
-    return fig
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Main UI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -251,14 +309,16 @@ def main():
         unsafe_allow_html=True,
     )
 
-    model_result = load_model()
-    if model_result[0] is None:
-        st.error("No trained model found. Run `train_baseline.py` and `train_multimodal.py` first.")
+    result = load_model()
+    if result[0] is None:
+        st.error("No trained model found. Run `train_baseline.py` or `train_v3.py` first.")
         return
 
-    model, gradcam, device, is_multimodal = model_result
+    model, gradcam, device, use_v3, model_name = result
+    hf_client = get_hf_client()
+
     device_str = f"cuda ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else "cpu"
-    st.caption(f"ResNet50 · image classification · {device_str}")
+    st.caption(f"{model_name} · {device_str}")
 
     st.divider()
 
@@ -302,7 +362,7 @@ def main():
     # ── Inference ─────────────────────────────────────────────────────────────
     with st.spinner("Running inference..."):
         pred_class, confidence, probs, cam = run_inference(
-            model, img_tensor, loc_idx, device, is_multimodal, gradcam
+            model, img_tensor, loc_idx, device, use_v3, gradcam
         )
 
     color = WOUND_COLORS[pred_class]
@@ -337,18 +397,28 @@ def main():
         overlay = overlay_gradcam(pil_img, cam_resized)
         st.image(overlay, use_container_width=True)
 
+    # ── Clinical Note (LLM) ───────────────────────────────────────────────────
+    st.divider()
+    st.markdown('<div class="section-label">Clinical Note · AI-generated</div>', unsafe_allow_html=True)
+
+    with st.spinner("Generating clinical note..."):
+        note = generate_clinical_note(pred_class, selected_loc, confidence, hf_client)
+
+    if note:
+        st.markdown(f'<div class="clinical-note">{note}</div>', unsafe_allow_html=True)
+        st.caption("Generated by LLM — for reference only, not clinical advice.")
+    else:
+        st.caption("Clinical note unavailable (set HF_TOKEN env var or check API access).")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("### WoundScope")
-        st.markdown("""
-**Dataset:** AZH Wound Dataset · 730 images · 4 classes
+        st.markdown(f"""
+**Dataset:** AZH Wound Dataset · 4 classes
 
-**Architecture:** ResNet50 (fine-tuned) → 4-class classifier
+**Architecture:** {model_name}
 
 **Classes:** Diabetic · Pressure · Surgical · Venous
-
-**Test accuracy:** 74% · macro-F1 0.70
         """)
         st.divider()
         st.caption("Research demo only. Not a medical device.")

@@ -1,7 +1,7 @@
-_tmp
+_tmp/
 .venv
 __pycache__
-_img
+_img/
 dataset/
 models/
 outputs/

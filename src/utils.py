@@ -72,7 +72,7 @@ def load_checkpoint(path, device="cpu"):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class GradCAM:
-    """Simple Grad-CAM for ResNet/EfficientNet — hooks on the last conv layer."""
+    """Grad-CAM for CNN models (ResNet etc.) — hooks on a target conv layer."""
 
     def __init__(self, model, target_layer):
         self.model = model
@@ -104,11 +104,51 @@ class GradCAM:
         self.model.zero_grad()
         logits[0, class_idx].backward()
 
-        # Pool gradients over spatial dims
         weights = self.gradients.mean(dim=(2, 3), keepdim=True)  # (1, C, 1, 1)
         cam = (weights * self.activations).sum(dim=1).squeeze()   # (H, W)
         cam = F.relu(cam)
         cam = cam.cpu().numpy()
+        cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+        return cam, class_idx
+
+
+class ViTGradCAM:
+    """Grad-CAM for ViT models (timm). Hooks on the last transformer block."""
+
+    def __init__(self, model):
+        self.model = model
+        self.activations = None
+        self.gradients = None
+        last_block = model.blocks[-1]
+        last_block.register_forward_hook(self._forward_hook)
+        last_block.register_full_backward_hook(self._backward_hook)
+
+    def _forward_hook(self, module, input, output):
+        # output: (B, N+1, C) — skip CLS token
+        self.activations = output[:, 1:, :].detach()
+
+    def _backward_hook(self, module, grad_in, grad_out):
+        self.gradients = grad_out[0][:, 1:, :].detach()
+
+    def generate(self, img_tensor, class_idx=None):
+        """
+        img_tensor: (1, C, H, W) on model device
+        Returns: heatmap as (H, W) numpy array, normalized 0-1
+        """
+        self.model.eval()
+        logits = self.model(img_tensor)
+        if class_idx is None:
+            class_idx = logits.argmax(dim=1).item()
+
+        self.model.zero_grad()
+        logits[0, class_idx].backward()
+
+        # (1, N, C) — weight activations by gradient importance per patch
+        cam = (self.gradients * self.activations).sum(dim=2)  # (1, N)
+        cam = F.relu(cam).squeeze(0)                          # (N,)
+
+        h = w = int(cam.shape[0] ** 0.5)                     # 14 for patch16/224
+        cam = cam.reshape(h, w).cpu().numpy()
         cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
         return cam, class_idx
 
