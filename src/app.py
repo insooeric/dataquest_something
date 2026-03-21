@@ -18,9 +18,10 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+import torch.nn as nn
+import torchvision.models as tvm
+
 from data_loader import WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS
-from train_multimodal import WoundScopeMultimodal
-from train import WoundScopeV2
 from utils import GradCAM, overlay_gradcam
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -33,8 +34,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-MULTIMODAL_CKPT = "models/multimodal_model.pth"
-BASELINE_CKPT   = "models/baseline_model.pth"
+BASELINE_CKPT = "models/baseline_model.pth"
 BODY_MAP_PATH   = "dataset/BodyMapAllRGB.png"
 
 WOUND_COLORS = {
@@ -129,37 +129,24 @@ st.markdown("""
 @st.cache_resource
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt_path = MULTIMODAL_CKPT if os.path.exists(MULTIMODAL_CKPT) else BASELINE_CKPT
 
-    if not os.path.exists(ckpt_path):
+    if not os.path.exists(BASELINE_CKPT):
         return None, None, None, None
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        ckpt = torch.load(BASELINE_CKPT, map_location=device, weights_only=False)
 
-    arch = ckpt.get("arch", "efficientnet_b0")
-    is_multimodal = "multimodal" in ckpt_path
-
-    if arch == "convnext_small":
-        model = WoundScopeV2(arch=arch, num_classes=len(WOUND_CLASSES))
-        target_layer = model.image_branch.stages[-1].blocks[-1].norm
-    elif is_multimodal:
-        model = WoundScopeMultimodal(arch=arch, num_classes=len(WOUND_CLASSES))
-        target_layer = model.image_branch.conv_head
-    else:
-        import torchvision.models as tvm
-        import torch.nn as nn
-        model = tvm.efficientnet_b0(weights=None)
-        model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(WOUND_CLASSES))
-        target_layer = model.features[-1][0]
+    model = tvm.resnet50(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, len(WOUND_CLASSES))
+    target_layer = model.layer4[-1]
 
     model.load_state_dict(ckpt["model_state"])
     model.to(device).eval()
 
-    gradcam = GradCAM(model.image_branch if hasattr(model, "image_branch") else model, target_layer)
+    gradcam = GradCAM(model, target_layer)
 
-    return model, gradcam, device, is_multimodal
+    return model, gradcam, device, False
 
 
 @st.cache_data
@@ -271,7 +258,7 @@ def main():
 
     model, gradcam, device, is_multimodal = model_result
     device_str = f"cuda ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else "cpu"
-    st.caption(f"multimodal · image + location · {device_str}")
+    st.caption(f"ResNet50 · image classification · {device_str}")
 
     st.divider()
 
@@ -350,17 +337,6 @@ def main():
         overlay = overlay_gradcam(pil_img, cam_resized)
         st.image(overlay, use_container_width=True)
 
-    # ── Location embedding weights ─────────────────────────────────────────────
-    if is_multimodal:
-        st.divider()
-        st.markdown('<div class="section-label">Location Embedding Weights</div>', unsafe_allow_html=True)
-        importance = get_loc_importance(model)
-        st.plotly_chart(
-            loc_chart(importance, selected_loc),
-            use_container_width=True,
-            config={"displayModeBar": False},
-        )
-        st.caption("How strongly each body region influences the model. Selected region highlighted.")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -368,7 +344,7 @@ def main():
         st.markdown("""
 **Dataset:** AZH Wound Dataset · 730 images · 4 classes
 
-**Architecture:** EfficientNet-B0 + location embedding (16-d) → MLP
+**Architecture:** ResNet50 (fine-tuned) → 4-class classifier
 
 **Classes:** Diabetic · Pressure · Surgical · Venous
 
