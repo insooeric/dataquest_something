@@ -55,7 +55,7 @@ class WoundDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        img_path = os.path.join(self.img_root, row["image_path"])
+        img_path = os.path.join(self.img_root, row["image_path"].replace("\\", "/"))
         image = Image.open(img_path).convert("RGB")
 
         if self.transform:
