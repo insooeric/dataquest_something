@@ -6,7 +6,8 @@
       "Bash(rm -rf _tmp/)",
       "Bash(cd:*)",
       "WebSearch",
-      "Bash(find /c/Users/insoo/Documents/Western_Dataquest/something -name bodymap -o -name *.png)"
+      "Bash(find /c/Users/insoo/Documents/Western_Dataquest/something -name bodymap -o -name *.png)",
+      "Bash(git:*)"
     ]
   }
 }

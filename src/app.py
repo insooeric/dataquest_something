@@ -36,6 +36,19 @@ st.set_page_config(
 
 V3_CKPT       = "models/woundscope_v3.pth"
 BASELINE_CKPT = "models/baseline_model.pth"
+HF_REPO_ID    = "geek933/woundscope"
+
+
+def ensure_model():
+    if not os.path.exists(V3_CKPT):
+        os.makedirs("models", exist_ok=True)
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename="woundscope_v3.pth",
+            local_dir="models",
+            token=HF_TOKEN,
+        )
 BODY_MAP_IMAGES = {
     "head_neck":       "dataset/azh_raw/BodyMap/FrontBody.png",
     "chest":           "dataset/azh_raw/BodyMap/FrontBody.png",
@@ -312,6 +325,7 @@ def prob_chart(probs, pred_class):
 def main():
     st.markdown("# 🩺 WoundScope")
 
+    ensure_model()
     result = load_model()
     if result[0] is None:
         st.error("No trained model found. Run `train_baseline.py` or `train_v3.py` first.")
