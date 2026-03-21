@@ -5,7 +5,8 @@
       "Bash(rm src/train_multimodal.py src/train.py models/multimodal_model.pth outputs/eval_multimodal.txt outputs/multimodal_curves.png outputs/metrics_report.txt)",
       "Bash(rm -rf _tmp/)",
       "Bash(cd:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(find /c/Users/insoo/Documents/Western_Dataquest/something -name bodymap -o -name *.png)"
     ]
   }
 }

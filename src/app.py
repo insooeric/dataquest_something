@@ -36,7 +36,14 @@ st.set_page_config(
 
 V3_CKPT       = "models/woundscope_v3.pth"
 BASELINE_CKPT = "models/baseline_model.pth"
-BODY_MAP_PATH = "dataset/BodyMapAllRGB.png"
+BODY_MAP_IMAGES = {
+    "head_neck":       "dataset/azh_raw/BodyMap/FrontBody.png",
+    "chest":           "dataset/azh_raw/BodyMap/FrontBody.png",
+    "abdomen":         "dataset/azh_raw/BodyMap/FrontBody.png",
+    "back":            "dataset/azh_raw/BodyMap/BackBody.png",
+    "upper_extremity": "dataset/azh_raw/BodyMap/RightHand.png",
+    "lower_extremity": "dataset/azh_raw/BodyMap/RightLeg.png",
+}
 
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 HF_MODEL  = "mistralai/Mistral-7B-Instruct-v0.1"
@@ -336,8 +343,6 @@ def main():
 
     with col_loc:
         st.markdown('<div class="section-label">Body Location</div>', unsafe_allow_html=True)
-        if os.path.exists(BODY_MAP_PATH):
-            st.image(BODY_MAP_PATH, use_container_width=True)
         selected_loc = st.selectbox(
             "location",
             options=list(LOCATION_LABELS.keys()),
@@ -346,6 +351,9 @@ def main():
             label_visibility="collapsed",
         )
         loc_idx = BODY_LOCATIONS.index(selected_loc)
+        body_map_img = BODY_MAP_IMAGES.get(selected_loc)
+        if body_map_img and os.path.exists(body_map_img):
+            st.image(body_map_img, use_container_width=True)
 
     # ── Classify ──────────────────────────────────────────────────────────────
     st.divider()
