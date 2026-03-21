@@ -35,19 +35,21 @@ st.set_page_config(
 )
 
 V3_CKPT       = "models/woundscope_v3.pth"
+V3_CKPT_TMP   = "/tmp/woundscope_v3.pth"
 BASELINE_CKPT = "models/baseline_model.pth"
 HF_REPO_ID    = "geek933/woundscope"
 
 
 def ensure_model():
-    if not os.path.exists(V3_CKPT):
-        os.makedirs("models", exist_ok=True)
-        from huggingface_hub import hf_hub_download
+    if os.path.exists(V3_CKPT) or os.path.exists(V3_CKPT_TMP):
+        return
+    from huggingface_hub import hf_hub_download
+    with st.spinner("Downloading model weights (~84 MB)..."):
         hf_hub_download(
             repo_id=HF_REPO_ID,
             filename="woundscope_v3.pth",
-            local_dir="models",
-            token=HF_TOKEN,
+            local_dir="/tmp",
+            token=HF_TOKEN or None,
         )
 BODY_MAP_IMAGES = {
     "head_neck":       "dataset/azh_raw/BodyMap/FrontBody.png",
@@ -163,9 +165,12 @@ st.markdown("""
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Try v3 (ViT multimodal) first, fall back to baseline (ResNet50)
+    # Try v3 (ViT multimodal) first, fall back to baseline
     if os.path.exists(V3_CKPT):
         ckpt_path = V3_CKPT
+        use_v3 = True
+    elif os.path.exists(V3_CKPT_TMP):
+        ckpt_path = V3_CKPT_TMP
         use_v3 = True
     elif os.path.exists(BASELINE_CKPT):
         ckpt_path = BASELINE_CKPT
@@ -187,13 +192,20 @@ def load_model():
         gradcam = ViTGradCAM(model.backbone)
         model_name = f"ViT-Small + location · {arch}"
     else:
+        import timm
         arch = ckpt.get("arch", "resnet50")
-        model = tvm.resnet50(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, len(WOUND_CLASSES))
-        model.load_state_dict(ckpt["model_state"])
-        model.to(device).eval()
-        gradcam = GradCAM(model, model.layer4[-1])
-        model_name = "ResNet50 (baseline)"
+        if arch == "efficientnet_b0":
+            model = timm.create_model("efficientnet_b0", pretrained=False, num_classes=len(WOUND_CLASSES))
+            model.load_state_dict(ckpt["model_state"])
+            model.to(device).eval()
+            gradcam = GradCAM(model, model.blocks[-1])
+        else:
+            model = tvm.resnet50(weights=None)
+            model.fc = nn.Linear(model.fc.in_features, len(WOUND_CLASSES))
+            model.load_state_dict(ckpt["model_state"])
+            model.to(device).eval()
+            gradcam = GradCAM(model, model.layer4[-1])
+        model_name = f"{arch} (baseline)"
 
     return model, gradcam, device, use_v3, model_name
 
