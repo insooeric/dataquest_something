@@ -252,10 +252,10 @@ class ViTGradCAM:
     """Grad-CAM for ViT models (timm). Hooks on the last transformer block."""
 
     def __init__(self, model):
-        self.model       = model   # expects model.backbone (ViT, num_classes=0)
+        self.model       = model   # expects WoundScope with .backbone (ViT, num_classes=0)
         self.activations = None
         self.gradients   = None
-        last_block = model.blocks[-1]
+        last_block = model.backbone.blocks[-1]
         last_block.register_forward_hook(self._forward_hook)
         last_block.register_full_backward_hook(self._backward_hook)
 
@@ -265,14 +265,14 @@ class ViTGradCAM:
     def _backward_hook(self, module, grad_in, grad_out):
         self.gradients = grad_out[0][:, 1:, :].detach()
 
-    def generate(self, img_tensor, class_idx=None):
+    def generate(self, img_tensor, loc_tensor, class_idx=None):
         self.model.eval()
-        logits = self.model(img_tensor)   # (1, feat_dim) from backbone
+        wound_logits, _ = self.model(img_tensor, loc_tensor)
         if class_idx is None:
-            class_idx = int(logits.argmax(dim=1).item())
+            class_idx = int(wound_logits.argmax(dim=1).item())
 
         self.model.zero_grad()
-        logits[0, class_idx].backward()
+        wound_logits[0, class_idx].backward()
 
         cam = (self.gradients * self.activations).sum(dim=2)
         cam = F.relu(cam).squeeze(0)

@@ -278,7 +278,7 @@ def main(args):
     def lr_lambda(ep):
         warmup = 5
         if ep < warmup:
-            return ep / warmup
+            return (ep + 1) / warmup
         progress = (ep - warmup) / max(args.epochs - warmup, 1)
         return 0.5 * (1 + np.cos(np.pi * progress))
 

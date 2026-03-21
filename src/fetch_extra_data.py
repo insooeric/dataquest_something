@@ -38,6 +38,7 @@ Adds severity labels for: Pressure (NPUAP Stage I–IV), Burns (1st–3rd degree
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -113,6 +114,10 @@ SEVERITY_MAP = {
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
+
+def _stable_hash(s):
+    return hashlib.md5(s.encode()).hexdigest()[:16]
+
 
 def _normalise(s):
     """Lowercase, strip path separators noise, collapse separators to _."""
@@ -287,7 +292,7 @@ def scan_yolo_dataset(root, img_root, debug=False):
 
             dest_folder = os.path.join(img_root, wound_type)
             os.makedirs(dest_folder, exist_ok=True)
-            dest_file = os.path.join(dest_folder, f"ext_{abs(hash(img_path))}.jpg")
+            dest_file = os.path.join(dest_folder, f"ext_{_stable_hash(img_path)}.jpg")
             if not os.path.exists(dest_file):
                 shutil.copy2(img_path, dest_file)
 
@@ -334,7 +339,7 @@ def scan_directory(root, img_root, debug=False):
 
             dest_folder = os.path.join(img_root, wound_type)
             os.makedirs(dest_folder, exist_ok=True)
-            dest_file = os.path.join(dest_folder, f"ext_{abs(hash(full))}.jpg")
+            dest_file = os.path.join(dest_folder, f"ext_{_stable_hash(full)}.jpg")
             if not os.path.exists(dest_file):
                 shutil.copy2(full, dest_file)
 
