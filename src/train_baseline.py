@@ -22,7 +22,7 @@ from data_loader import build_dataloaders, WOUND_CLASSES
 from utils import evaluate, print_report, save_checkpoint, get_device, plot_training_curves
 
 
-def build_model(arch="resnet50", num_classes=4):
+def build_model(arch="resnet50", num_classes=len(WOUND_CLASSES)):
     if arch == "resnet50":
         model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
@@ -33,19 +33,19 @@ def build_model(arch="resnet50", num_classes=4):
     return model
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, freeze_backbone=False):
+def train_one_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
-    for imgs, locs, labels in loader:
+    for imgs, locs, labels, _severity in loader:
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad()
         logits = model(imgs)
-        loss = criterion(logits, labels)
+        loss   = criterion(logits, labels)
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
-        correct += (logits.argmax(1) == labels).sum().item()
-        total += imgs.size(0)
+        correct    += (logits.argmax(1) == labels).sum().item()
+        total      += imgs.size(0)
     return total_loss / total, correct / total
 
 
@@ -53,13 +53,13 @@ def val_one_epoch(model, loader, criterion, device):
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
     with torch.no_grad():
-        for imgs, locs, labels in loader:
+        for imgs, locs, labels, _severity in loader:
             imgs, labels = imgs.to(device), labels.to(device)
             logits = model(imgs)
-            loss = criterion(logits, labels)
+            loss   = criterion(logits, labels)
             total_loss += loss.item() * imgs.size(0)
-            correct += (logits.argmax(1) == labels).sum().item()
-            total += imgs.size(0)
+            correct    += (logits.argmax(1) == labels).sum().item()
+            total      += imgs.size(0)
     return total_loss / total, correct / total
 
 
@@ -69,7 +69,7 @@ def main(args):
         args.data_csv, args.img_root, batch_size=args.batch_size
     )
 
-    model = build_model(args.arch, num_classes=len(WOUND_CLASSES)).to(device)
+    model     = build_model(args.arch, num_classes=len(WOUND_CLASSES)).to(device)
     criterion = nn.CrossEntropyLoss()
 
     # Phase 1: freeze backbone, train only head
@@ -79,13 +79,11 @@ def main(args):
             if "fc" not in name and "classifier" not in name and "head" not in name:
                 param.requires_grad = False
         head_params = [p for p in model.parameters() if p.requires_grad]
-        optimizer = torch.optim.Adam(head_params, lr=args.lr * 10)
+        optimizer   = torch.optim.Adam(head_params, lr=args.lr * 10)
         for ep in range(args.freeze_epochs):
             tl, ta = train_one_epoch(model, train_loader, optimizer, criterion, device)
             vl, va = val_one_epoch(model, val_loader, criterion, device)
             print(f"  Epoch {ep+1}/{args.freeze_epochs}  train_loss={tl:.4f} train_acc={ta:.3f}  val_loss={vl:.4f} val_acc={va:.3f}")
-
-        # Unfreeze all
         for p in model.parameters():
             p.requires_grad = True
 
@@ -96,7 +94,7 @@ def main(args):
 
     best_val_acc = 0.0
     train_losses, val_losses, val_accs = [], [], []
-    os.makedirs("models", exist_ok=True)
+    os.makedirs("models",  exist_ok=True)
     os.makedirs("outputs", exist_ok=True)
 
     for ep in range(args.epochs):
@@ -112,8 +110,10 @@ def main(args):
 
         if va > best_val_acc:
             best_val_acc = va
-            save_checkpoint({"model_state": model.state_dict(), "arch": args.arch, "epoch": ep+1},
-                            "models/baseline_model.pth")
+            save_checkpoint(
+                {"model_state": model.state_dict(), "arch": args.arch, "epoch": ep + 1},
+                "models/baseline_model.pth",
+            )
 
     plot_training_curves(train_losses, val_losses, val_accs, "outputs/baseline_curves.png")
 
@@ -125,20 +125,19 @@ def main(args):
     def model_fn(imgs, locs=None):
         return model(imgs)
 
-    acc, f1, preds, labels = evaluate(model_fn, test_loader, device)
+    acc, f1, preds, labels, _ = evaluate(model_fn, test_loader, device)
     print(f"Test Accuracy: {acc:.4f}  Macro-F1: {f1:.4f}")
     print_report(preds, labels, out_path="outputs/eval_baseline.txt")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_csv", default="dataset/labels.csv")
-    parser.add_argument("--img_root", default="dataset/wound_images")
-    parser.add_argument("--arch", default="resnet50", choices=["resnet50", "efficientnet_b0"])
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--freeze_epochs", type=int, default=2,
-                        help="Epochs to train only head before unfreezing (0 to skip)")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--data_csv",      default="dataset/labels.csv")
+    parser.add_argument("--img_root",      default="dataset/wound_images")
+    parser.add_argument("--arch",          default="resnet50", choices=["resnet50", "efficientnet_b0"])
+    parser.add_argument("--epochs",        type=int,   default=20)
+    parser.add_argument("--freeze_epochs", type=int,   default=2)
+    parser.add_argument("--batch_size",    type=int,   default=32)
+    parser.add_argument("--lr",            type=float, default=1e-4)
     args = parser.parse_args()
     main(args)

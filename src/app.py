@@ -21,12 +21,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 import torch.nn as nn
 import torchvision.models as tvm
 
-from data_loader import WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS
+from data_loader import (
+    WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS,
+    SEVERITY_NAMES_BY_TYPE,
+)
 from utils import GradCAM, ViTGradCAM, overlay_gradcam
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Config
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Config ──────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="WoundScope",
     page_icon="🩺",
@@ -38,6 +39,8 @@ V3_CKPT       = "models/woundscope_v3.pth"
 V3_CKPT_TMP   = "/tmp/woundscope_v3.pth"
 BASELINE_CKPT = "models/baseline_model.pth"
 HF_REPO_ID    = "geek933/woundscope"
+HF_TOKEN      = os.environ.get("HF_TOKEN", "")
+HF_MODEL      = "mistralai/Mistral-7B-Instruct-v0.1"
 
 
 def ensure_model():
@@ -51,6 +54,8 @@ def ensure_model():
             local_dir="/tmp",
             token=HF_TOKEN or None,
         )
+
+
 BODY_MAP_IMAGES = {
     "head_neck":       "assets/FrontBody.png",
     "chest":           "assets/FrontBody.png",
@@ -60,21 +65,24 @@ BODY_MAP_IMAGES = {
     "lower_extremity": "assets/RightLeg.png",
 }
 
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-HF_MODEL  = "mistralai/Mistral-7B-Instruct-v0.1"
-
 WOUND_COLORS = {
-    "Diabetic": "#FF6B6B",
-    "Pressure": "#4ECDC4",
-    "Surgical": "#45B7D1",
-    "Venous":   "#96CEB4",
+    "Diabetic":   "#FF6B6B",
+    "Pressure":   "#4ECDC4",
+    "Surgical":   "#45B7D1",
+    "Venous":     "#96CEB4",
+    "Arterial":   "#F7A440",
+    "Burns":      "#E05C5C",
+    "Laceration": "#A78BFA",
 }
 
 WOUND_DESCRIPTIONS = {
-    "Diabetic": "Typically on feet/lower legs. Punched-out appearance with surrounding callus.",
-    "Pressure": "Over bony prominences from sustained pressure. Ranges from redness to deep tissue damage.",
-    "Surgical": "Post-operative incision wounds. May present with dehiscence or delayed healing.",
-    "Venous":   "Lower leg (gaiter area). Irregular borders with surrounding skin changes.",
+    "Diabetic":   "Typically on feet/lower legs. Punched-out appearance with surrounding callus.",
+    "Pressure":   "Over bony prominences from sustained pressure. Ranges from redness to deep tissue damage.",
+    "Surgical":   "Post-operative incision wounds. May present with dehiscence or delayed healing.",
+    "Venous":     "Lower leg (gaiter area). Irregular borders with surrounding skin changes.",
+    "Arterial":   "Distal extremities. Pale, punched-out appearance; painful, poor pulses.",
+    "Burns":      "Thermal injury. Classified by depth: superficial to full-thickness.",
+    "Laceration": "Traumatic wound from blunt or sharp force. Variable depth and contamination.",
 }
 
 LOCATION_LABELS = {
@@ -134,6 +142,15 @@ st.markdown("""
         opacity: 0.8;
         line-height: 1.5;
     }
+    .severity-badge {
+        display: inline-block;
+        margin-top: 0.6rem;
+        padding: 0.25rem 0.7rem;
+        border-radius: 999px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+    }
 
     .section-label {
         font-size: 0.72rem;
@@ -157,24 +174,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Model loading
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Model loading ───────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Try v3 (ViT multimodal) first, fall back to baseline
     if os.path.exists(V3_CKPT):
-        ckpt_path = V3_CKPT
-        use_v3 = True
+        ckpt_path, use_v3 = V3_CKPT, True
     elif os.path.exists(V3_CKPT_TMP):
-        ckpt_path = V3_CKPT_TMP
-        use_v3 = True
+        ckpt_path, use_v3 = V3_CKPT_TMP, True
     elif os.path.exists(BASELINE_CKPT):
-        ckpt_path = BASELINE_CKPT
-        use_v3 = False
+        ckpt_path, use_v3 = BASELINE_CKPT, False
     else:
         return None, None, None, None, None
 
@@ -184,12 +195,23 @@ def load_model():
 
     if use_v3:
         import timm
-        from train_v3 import WoundScopeV3
+        from train import WoundScope
         arch = ckpt.get("arch", "vit_small_patch16_224")
-        model = WoundScopeV3(arch=arch, num_classes=len(WOUND_CLASSES))
-        model.load_state_dict(ckpt["model_state"])
+        # Support checkpoints saved before multi-task update (num_classes may differ)
+        saved_num_classes = ckpt.get("num_classes", len(WOUND_CLASSES))
+        model = WoundScope(arch=arch, num_classes=saved_num_classes)
+        try:
+            model.load_state_dict(ckpt["model_state"])
+        except RuntimeError:
+            # Old checkpoint uses 'classifier.*' keys; new arch uses 'shared'/'wound_head'
+            # Need to retrain — fall back gracefully
+            st.error(
+                "Checkpoint is from the old 4-class architecture. "
+                "Please retrain with `train.py` to use the new 7-class multi-task model."
+            )
+            return None, None, None, None, None
         model.to(device).eval()
-        gradcam = ViTGradCAM(model.backbone)
+        gradcam    = ViTGradCAM(model.backbone)
         model_name = f"ViT-Small + location · {arch}"
     else:
         import timm
@@ -222,41 +244,45 @@ def get_hf_client():
 @st.cache_data
 def preprocess_image(file_bytes):
     pil_img = Image.open(file_bytes).convert("RGB")
-    tensor = VAL_TRANSFORM(pil_img).unsqueeze(0)
+    tensor  = VAL_TRANSFORM(pil_img).unsqueeze(0)
     return pil_img, tensor
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Inference
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Inference ───────────────────────────────────────────────────────────────────
 
 def run_inference(model, img_tensor, loc_idx, device, use_v3, gradcam):
     img_tensor = img_tensor.to(device)
     loc_tensor = torch.tensor([loc_idx], dtype=torch.long).to(device)
 
     with torch.no_grad():
-        logits = model(img_tensor, loc_tensor) if use_v3 else model(img_tensor)
+        out = model(img_tensor, loc_tensor) if use_v3 else model(img_tensor)
 
-    probs = F.softmax(logits, dim=1).squeeze().cpu().numpy()
+    if isinstance(out, tuple):
+        wound_logits, sev_logits = out
+    else:
+        wound_logits = out
+        sev_logits   = None
+
+    probs    = F.softmax(wound_logits, dim=1).squeeze().cpu().numpy()
     pred_idx = int(probs.argmax())
 
-    # GradCAM needs gradients
+    sev_idx = None
+    if sev_logits is not None:
+        sev_idx = int(sev_logits.argmax(dim=1).item())
+
+    # Grad-CAM (run backbone only — no tuple issue)
     img_tensor = img_tensor.detach().requires_grad_(True)
-    if use_v3:
-        # For ViT GradCAM, run through backbone only
-        cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
-    else:
-        cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
+    cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
 
-    return WOUND_CLASSES[pred_idx], float(probs[pred_idx]), probs, cam
+    return WOUND_CLASSES[pred_idx], float(probs[pred_idx]), probs, cam, sev_idx
 
 
-def generate_clinical_note(wound_type, location, confidence, client):
-    """Call HF inference API to generate a clinical summary."""
+def generate_clinical_note(wound_type, location, confidence, severity_label, client):
     if client is None:
         return None
 
     location_label = LOCATION_LABELS.get(location, location)
+    sev_str = f" ({severity_label})" if severity_label else ""
     messages = [
         {
             "role": "system",
@@ -269,7 +295,7 @@ def generate_clinical_note(wound_type, location, confidence, client):
         {
             "role": "user",
             "content": (
-                f"A wound classification model detected a {wound_type} wound "
+                f"A wound classification model detected a {wound_type}{sev_str} wound "
                 f"at the {location_label} with {confidence:.0%} confidence. "
                 f"Write a brief clinical note covering: typical characteristics of this wound type, "
                 f"key assessment considerations for this body location, and general care priorities."
@@ -286,7 +312,6 @@ def generate_clinical_note(wound_type, location, confidence, client):
         )
         return response.choices[0].message.content.strip()
     except Exception:
-        # Try smaller fallback model
         try:
             response = client.chat_completion(
                 messages=messages,
@@ -299,13 +324,12 @@ def generate_clinical_note(wound_type, location, confidence, client):
             return None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Charts
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Charts ──────────────────────────────────────────────────────────────────────
 
 def prob_chart(probs, pred_class):
     colors = [
-        WOUND_COLORS[cls] if cls == pred_class else "rgba(255,255,255,0.15)"
+        WOUND_COLORS.get(cls, "rgba(255,255,255,0.15)")
+        if cls == pred_class else "rgba(255,255,255,0.15)"
         for cls in WOUND_CLASSES
     ]
     fig = go.Figure(go.Bar(
@@ -315,24 +339,23 @@ def prob_chart(probs, pred_class):
         marker_color=colors,
         text=[f"{p:.1%}" for p in probs],
         textposition="outside",
-        textfont=dict(size=13),
+        textfont=dict(size=12),
         hoverinfo="skip",
     ))
+    bar_height = max(200, len(WOUND_CLASSES) * 32)
     fig.update_layout(
         margin=dict(l=0, r=40, t=4, b=4),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         xaxis=dict(visible=False, range=[0, min(max(probs) * 1.25, 1.0)]),
-        yaxis=dict(tickfont=dict(size=13)),
-        height=160,
+        yaxis=dict(tickfont=dict(size=12)),
+        height=bar_height,
         showlegend=False,
     )
     return fig
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main UI
-# ──────────────────────────────────────────────────────────────────────────────
+# ── Main UI ─────────────────────────────────────────────────────────────────────
 
 def main():
     st.markdown("# 🩺 WoundScope")
@@ -348,7 +371,7 @@ def main():
 
     st.divider()
 
-    # ── Inputs ────────────────────────────────────────────────────────────────
+    # ── Inputs ─────────────────────────────────────────────────────────────────
     col_img, col_loc = st.columns([1, 1], gap="large")
 
     with col_img:
@@ -366,15 +389,15 @@ def main():
             "location",
             options=list(LOCATION_LABELS.keys()),
             format_func=lambda x: LOCATION_LABELS[x],
-            index=5,  # lower_extremity default
+            index=5,
             label_visibility="collapsed",
         )
-        loc_idx = BODY_LOCATIONS.index(selected_loc)
+        loc_idx      = BODY_LOCATIONS.index(selected_loc)
         body_map_img = BODY_MAP_IMAGES.get(selected_loc)
         if body_map_img and os.path.exists(body_map_img):
             st.image(body_map_img, width='stretch')
 
-    # ── Classify ──────────────────────────────────────────────────────────────
+    # ── Classify ───────────────────────────────────────────────────────────────
     st.divider()
     classify = st.button(
         "Classify Wound",
@@ -386,33 +409,50 @@ def main():
     if not classify or uploaded is None:
         return
 
-    # ── Inference ─────────────────────────────────────────────────────────────
+    # ── Inference ──────────────────────────────────────────────────────────────
     with st.spinner("Running inference..."):
-        pred_class, confidence, probs, cam = run_inference(
+        pred_class, confidence, probs, cam, sev_idx = run_inference(
             model, img_tensor, loc_idx, device, use_v3, gradcam
         )
 
-    color = WOUND_COLORS[pred_class]
+    # Resolve severity label
+    severity_label = None
+    if sev_idx is not None and pred_class in SEVERITY_NAMES_BY_TYPE:
+        names = SEVERITY_NAMES_BY_TYPE[pred_class]
+        if sev_idx < len(names):
+            severity_label = names[sev_idx]
+
+    color = WOUND_COLORS.get(pred_class, "#888888")
     st.divider()
 
-    # ── Results ───────────────────────────────────────────────────────────────
+    # ── Results ────────────────────────────────────────────────────────────────
     res_left, res_right = st.columns([1, 1], gap="large")
 
     with res_left:
+        sev_badge = (
+            f'<div class="severity-badge" style="background:{color}33; color:{color};">'
+            f'{severity_label}</div>'
+            if severity_label else ""
+        )
         st.markdown(f"""
         <div class="pred-card" style="border-color:{color}33; background:{color}0d;">
             <div class="pred-label">Prediction</div>
             <div class="pred-class" style="color:{color};">{pred_class} Wound</div>
             <div class="pred-conf" style="color:{color};">{confidence:.0%}</div>
             <div class="pred-sub">confidence</div>
-            <div class="pred-desc">{WOUND_DESCRIPTIONS[pred_class]}</div>
+            {sev_badge}
+            <div class="pred-desc">{WOUND_DESCRIPTIONS.get(pred_class, '')}</div>
         </div>
         """, unsafe_allow_html=True)
 
         st.caption(f"Location: {LOCATION_LABELS[selected_loc]}")
 
         st.markdown('<div class="section-label" style="margin-top:1rem;">Class Probabilities</div>', unsafe_allow_html=True)
-        st.plotly_chart(prob_chart(probs, pred_class), width='stretch', config={"displayModeBar": False, "scrollZoom": False, "staticPlot": True})
+        st.plotly_chart(
+            prob_chart(probs, pred_class),
+            width='stretch',
+            config={"displayModeBar": False, "scrollZoom": False, "staticPlot": True},
+        )
 
     with res_right:
         st.markdown('<div class="section-label">Grad-CAM · What the model saw</div>', unsafe_allow_html=True)
@@ -424,15 +464,25 @@ def main():
         overlay = overlay_gradcam(pil_img, cam_resized)
         st.image(overlay, width='stretch')
 
-    # ── Sidebar ───────────────────────────────────────────────────────────────
+        # Clinical note
+        if hf_client:
+            with st.spinner("Generating clinical note..."):
+                note = generate_clinical_note(
+                    pred_class, selected_loc, confidence, severity_label, hf_client
+                )
+            if note:
+                st.markdown('<div class="section-label" style="margin-top:1rem;">Clinical Note</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="clinical-note">{note}</div>', unsafe_allow_html=True)
+
+    # ── Sidebar ────────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("### WoundScope")
         st.markdown(f"""
-**Dataset:** AZH Wound Dataset · 4 classes
-
 **Architecture:** {model_name}
 
-**Classes:** Diabetic · Pressure · Surgical · Venous
+**Classes ({len(WOUND_CLASSES)}):** {' · '.join(WOUND_CLASSES)}
+
+**Severity grading:** Pressure (Stage I–IV) · Burns (1st–3rd degree)
         """)
         st.divider()
         st.caption("Research demo only. Not a medical device.")
