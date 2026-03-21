@@ -13,6 +13,7 @@ Usage:
 import argparse
 import os
 import sys
+import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -25,6 +26,7 @@ import timm
 import torchvision.transforms as T
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 from data_loader import (
     WoundDataset, WOUND_CLASSES, BODY_LOCATIONS, NUM_LOCATIONS, NUM_SEVERITY,
@@ -173,7 +175,8 @@ def train_one_epoch(model, loader, optimizer, wound_criterion, sev_criterion, de
     model.train()
     total_loss, correct, total = 0.0, 0, 0
 
-    for imgs, locs, labels, severity in loader:
+    bar = tqdm(loader, desc="  train", leave=False, unit="batch")
+    for imgs, locs, labels, severity in bar:
         imgs, locs, labels, severity = (
             imgs.to(device), locs.to(device), labels.to(device), severity.to(device)
         )
@@ -203,6 +206,7 @@ def train_one_epoch(model, loader, optimizer, wound_criterion, sev_criterion, de
         optimizer.step()
         total_loss += loss.item() * imgs.size(0)
         total      += imgs.size(0)
+        bar.set_postfix(loss=f"{total_loss/total:.4f}", acc=f"{correct/total:.3f}")
 
     return total_loss / total, correct / total
 
@@ -211,7 +215,8 @@ def val_one_epoch(model, loader, wound_criterion, sev_criterion, device, sev_wei
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
     with torch.no_grad():
-        for imgs, locs, labels, severity in loader:
+        bar = tqdm(loader, desc="    val", leave=False, unit="batch")
+        for imgs, locs, labels, severity in bar:
             imgs, locs, labels, severity = (
                 imgs.to(device), locs.to(device), labels.to(device), severity.to(device)
             )
@@ -223,6 +228,7 @@ def val_one_epoch(model, loader, wound_criterion, sev_criterion, device, sev_wei
             total_loss += loss.item() * imgs.size(0)
             correct    += (wound_logits.argmax(1) == labels).sum().item()
             total      += imgs.size(0)
+            bar.set_postfix(loss=f"{total_loss/total:.4f}", acc=f"{correct/total:.3f}")
     return total_loss / total, correct / total
 
 
@@ -275,9 +281,11 @@ def main(args):
     os.makedirs("outputs", exist_ok=True)
 
     for ep in range(args.epochs):
+        t0 = time.time()
         tl, ta = train_one_epoch(model, train_loader, optimizer, wound_criterion, sev_criterion, device)
         vl, va = val_one_epoch(model, val_loader, wound_criterion, sev_criterion, device)
         scheduler.step()
+        elapsed = time.time() - t0
 
         train_losses.append(tl)
         val_losses.append(vl)
@@ -286,7 +294,8 @@ def main(args):
         lr_now = scheduler.get_last_lr()[0]
         print(f"Epoch {ep+1:3d}/{args.epochs}  "
               f"train_loss={tl:.4f} train_acc={ta:.3f}  "
-              f"val_loss={vl:.4f} val_acc={va:.3f}  lr={lr_now:.2e}")
+              f"val_loss={vl:.4f} val_acc={va:.3f}  "
+              f"lr={lr_now:.2e}  {elapsed:.0f}s")
 
         if va > best_val_acc:
             best_val_acc = va
