@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 import time
 import numpy as np
@@ -154,8 +155,17 @@ def build_loaders(csv_path, img_root, batch_size, seed=42):
     if "severity" not in df.columns:
         df["severity"] = SEVERITY_UNKNOWN
 
-    train_df, temp_df = train_test_split(df, test_size=0.30, stratify=df["wound_type"], random_state=seed)
-    val_df,   test_df = train_test_split(temp_df, test_size=0.50, stratify=temp_df["wound_type"], random_state=seed)
+    # Split on base images (not rows) to prevent augmented copies leaking across splits
+    df["_base"] = df["image_path"].apply(
+        lambda p: re.sub(r"_\d+\.(jpg|jpeg|png)$", "", p.replace("\\", "/"), flags=re.IGNORECASE)
+    )
+    bases = df[["_base", "wound_type"]].drop_duplicates("_base")
+    train_bases, temp_bases = train_test_split(bases, test_size=0.30, stratify=bases["wound_type"], random_state=seed)
+    val_bases,   test_bases = train_test_split(temp_bases, test_size=0.50, stratify=temp_bases["wound_type"], random_state=seed)
+
+    train_df = df[df["_base"].isin(train_bases["_base"])].drop(columns="_base")
+    val_df   = df[df["_base"].isin(val_bases["_base"])].drop(columns="_base")
+    test_df  = df[df["_base"].isin(test_bases["_base"])].drop(columns="_base")
 
     train_ds = WoundDataset(train_df, img_root, TRAIN_TRANSFORM_V3)
     val_ds   = WoundDataset(val_df,   img_root, VAL_TRANSFORM)
