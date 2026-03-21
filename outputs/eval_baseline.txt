@@ -1,0 +1,17 @@
+Classification Report:
+              precision    recall  f1-score   support
+
+    Diabetic       0.65      0.61      0.63        28
+    Pressure       0.50      0.45      0.47        20
+    Surgical       0.73      0.76      0.75        25
+      Venous       0.82      0.89      0.86        37
+
+    accuracy                           0.71       110
+   macro avg       0.68      0.68      0.68       110
+weighted avg       0.70      0.71      0.70       110
+
+Confusion Matrix:
+[[17  6  2  3]
+ [ 5  9  3  3]
+ [ 3  2 19  1]
+ [ 1  1  2 33]]
