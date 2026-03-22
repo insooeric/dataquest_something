@@ -197,13 +197,9 @@ def load_model():
         from train import WoundScope
         saved_num_classes = ckpt.get("num_classes", len(WOUND_CLASSES))
         model = WoundScope(num_classes=saved_num_classes)
-        try:
-            model.load_state_dict(ckpt["model_state"])
-        except RuntimeError:
-            st.error(
-                "Checkpoint is from an old architecture. "
-                "Please retrain with `train.py` to use the current model."
-            )
+        missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+        if unexpected:
+            st.error("Checkpoint has unexpected keys — architecture mismatch.")
             return None, None, None, None, None
         model.to(device).eval()
         gradcam    = GradCAM(model, model.backbone.stage4[-1])
