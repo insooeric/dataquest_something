@@ -482,7 +482,7 @@ def main():
 
 **Classes ({len(WOUND_CLASSES)}):** {' · '.join(WOUND_CLASSES)}
 
-**Severity grading:** Pressure (Stage I–IV) · Burns (1st–3rd degree)
+**Severity grading:** Pressure (Stage I–IV)
         """)
         st.divider()
         st.caption("Research demo only. Not a medical device.")

@@ -37,7 +37,6 @@ NUM_SEVERITY     = 4    # valid ordinal values: 0, 1, 2, 3
 # Human-readable severity labels per wound type (for UI / reports)
 SEVERITY_NAMES_BY_TYPE = {
     "Pressure": ["Stage I", "Stage II", "Stage III", "Stage IV"],
-    "Burns":    ["1st Degree", "2nd Degree", "3rd Degree", "Deep Burn"],
 }
 
 # ── Body locations (6 zones, HAM10000-aligned) ─────────────────────────────────
