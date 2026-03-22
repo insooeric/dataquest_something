@@ -11,6 +11,7 @@ Unified severity scale:
 """
 
 import os
+import re
 import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
@@ -110,12 +111,21 @@ def build_dataloaders(csv_path, img_root, batch_size=32, seed=42):
     if "severity" not in df.columns:
         df["severity"] = SEVERITY_UNKNOWN
 
-    train_df, temp_df = train_test_split(
-        df, test_size=0.30, stratify=df["wound_type"], random_state=seed
+    df["_base"] = df["image_path"].apply(
+        lambda p: re.sub(r"_\d+\.(jpg|jpeg|png)$", "", p.replace("\\", "/"), flags=re.IGNORECASE)
     )
-    val_df, test_df = train_test_split(
-        temp_df, test_size=0.50, stratify=temp_df["wound_type"], random_state=seed
-    )
+    bases = df[["_base", "wound_type"]].drop_duplicates("_base")
+
+    def _stratify(frame):
+        counts = frame["wound_type"].value_counts()
+        return frame["wound_type"] if (counts >= 2).all() else None
+
+    train_bases, temp_bases = train_test_split(bases, test_size=0.30, stratify=_stratify(bases), random_state=seed)
+    val_bases,   test_bases = train_test_split(temp_bases, test_size=0.50, stratify=_stratify(temp_bases), random_state=seed)
+
+    train_df = df[df["_base"].isin(train_bases["_base"])].drop(columns="_base")
+    val_df   = df[df["_base"].isin(val_bases["_base"])].drop(columns="_base")
+    test_df  = df[df["_base"].isin(test_bases["_base"])].drop(columns="_base")
 
     train_ds = WoundDataset(train_df, img_root, TRAIN_TRANSFORM)
     val_ds   = WoundDataset(val_df,   img_root, VAL_TRANSFORM)

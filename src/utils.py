@@ -75,7 +75,7 @@ def evaluate(model_fn, loader, device):
         if all_sev_labels else None
     )
 
-    return acc, f1, wound_preds_arr, wound_labels_arr, sev_acc
+    return acc, f1, wound_preds_arr, wound_labels_arr, sev_acc, wound_probs_arr, all_sev_preds, all_sev_labels
 
 
 def per_class_auc(labels, probs, class_names=None):
@@ -109,9 +109,12 @@ def severity_metrics(sev_preds, sev_labels):
     """
     if len(sev_labels) == 0:
         return {}
-    acc   = accuracy_score(sev_labels, sev_preds)
-    kappa = cohen_kappa_score(sev_labels, sev_preds, weights="quadratic")
-    mae   = float(np.mean(np.abs(np.array(sev_preds) - np.array(sev_labels))))
+    acc = accuracy_score(sev_labels, sev_preds)
+    try:
+        kappa = cohen_kappa_score(sev_labels, sev_preds, weights="quadratic")
+    except ValueError:
+        kappa = float("nan")
+    mae = float(np.mean(np.abs(np.array(sev_preds) - np.array(sev_labels))))
     return {"sev_accuracy": acc, "weighted_kappa": kappa, "sev_mae": mae}
 
 

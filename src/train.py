@@ -21,7 +21,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler
 import timm
 import torchvision.transforms as T
@@ -336,34 +335,19 @@ def main(args):
     def model_fn(imgs, locs):
         return model(imgs, locs)
 
-    acc, f1, preds, labels, sev_acc = evaluate(model_fn, test_loader, device)
+    model.eval()
+    acc, f1, preds, labels, sev_acc, probs_arr, all_sev_preds, all_sev_labels = evaluate(model_fn, test_loader, device)
     print(f"Test Accuracy: {acc:.4f}  Macro-F1: {f1:.4f}", end="")
     if sev_acc is not None:
         print(f"  Severity Acc: {sev_acc:.4f}", end="")
     print()
 
-    # Collect probs + severity preds for full report
-    all_probs, all_sev_preds, all_sev_labels = [], [], []
-    model.eval()
-    with torch.no_grad():
-        for imgs, locs, lbl, sev in test_loader:
-            imgs, locs = imgs.to(device), locs.to(device)
-            w_logits, s_logits = model(imgs, locs)
-            all_probs.append(F.softmax(w_logits, dim=1).cpu().numpy())
-            s_preds = s_logits.argmax(dim=1).cpu().numpy()
-            s_true  = sev.numpy()
-            mask    = s_true >= 0
-            if mask.any():
-                all_sev_preds.extend(s_preds[mask].tolist())
-                all_sev_labels.extend(s_true[mask].tolist())
-
-    probs_arr = np.vstack(all_probs) if all_probs else None
     print_report(
         preds, labels,
-        probs       = probs_arr,
-        sev_preds   = all_sev_preds   if all_sev_labels else None,
-        sev_labels  = all_sev_labels  if all_sev_labels else None,
-        out_path    = "outputs/eval_v3.txt",
+        probs      = probs_arr,
+        sev_preds  = all_sev_preds  if all_sev_labels else None,
+        sev_labels = all_sev_labels if all_sev_labels else None,
+        out_path   = "outputs/eval_v3.txt",
     )
     plot_confusion_matrix(preds, labels, out_path="outputs/confusion_matrix.png")
 
