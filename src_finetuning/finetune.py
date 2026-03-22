@@ -1,0 +1,319 @@
+"""
+WoundScope – Phase 2: Fine-tune on wound dataset.
+
+Loads the pretrained WoundCNN backbone from models/backbone_pretrained.pth,
+attaches location embedding + classification heads, and fine-tunes.
+
+Phase 1 (5 epochs):  backbone frozen, train heads only at lr=1e-3
+Phase 2 (remaining): full fine-tune at lr=args.lr with cosine schedule
+
+Saves: models/woundscope_v3.pth
+
+Usage:
+    python src_finetuning/finetune.py
+    python src_finetuning/finetune.py --epochs 100 --batch_size 32 --lr 1e-4
+"""
+
+import argparse
+import os
+import re
+import sys
+import time
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(__file__))                                    # src_finetuning/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src_pretrain")) # architecture
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, WeightedRandomSampler
+import torchvision.transforms as T
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+
+from architecture import WoundCNN
+from data_loader import (
+    WoundDataset, WOUND_CLASSES, BODY_LOCATIONS, NUM_LOCATIONS,
+    NUM_SEVERITY, SEVERITY_UNKNOWN, VAL_TRANSFORM,
+)
+from utils import (
+    evaluate, print_report, plot_confusion_matrix,
+    save_checkpoint, get_device, plot_training_curves,
+)
+
+
+# ── Augmentation ─────────────────────────────────────────────────────────────────
+
+TRAIN_TRANSFORM = T.Compose([
+    T.Resize((256, 256)),
+    T.RandomResizedCrop(224, scale=(0.7, 1.0)),
+    T.RandomHorizontalFlip(),
+    T.RandomVerticalFlip(),
+    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+    T.RandomGrayscale(p=0.05),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    T.RandomErasing(p=0.2, scale=(0.02, 0.15)),
+])
+
+
+# ── WoundScope model ──────────────────────────────────────────────────────────────
+
+class WoundScope(nn.Module):
+    """
+    WoundCNN backbone + location embedding + wound/severity heads.
+    Backbone is loaded from a pretrained checkpoint (no pretrained=True ever).
+    """
+
+    def __init__(self, num_classes=len(WOUND_CLASSES), num_locations=NUM_LOCATIONS,
+                 loc_emb_dim=32, hidden_dim=256, dropout=0.4,
+                 num_severity=NUM_SEVERITY):
+        super().__init__()
+        self.backbone      = WoundCNN()
+        self.feat_dim      = WoundCNN.FEAT_DIM  # 512
+        self.loc_embedding = nn.Embedding(num_locations, loc_emb_dim)
+
+        fused_dim = self.feat_dim + loc_emb_dim
+        self.shared = nn.Sequential(
+            nn.LayerNorm(fused_dim),
+            nn.Linear(fused_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.wound_head    = nn.Linear(hidden_dim, num_classes)
+        self.severity_head = nn.Linear(hidden_dim, num_severity)
+
+    def load_backbone(self, ckpt_path, device):
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        self.backbone.load_state_dict(ckpt["backbone_state"])
+        print(f"Loaded pretrained backbone from {ckpt_path} (epoch {ckpt.get('epoch','?')}, val_acc={ckpt.get('val_acc',0):.3f})")
+
+    def forward(self, img, loc_idx):
+        img_feat = self.backbone(img)
+        loc_feat = self.loc_embedding(loc_idx)
+        shared   = self.shared(torch.cat([img_feat, loc_feat], dim=1))
+        return self.wound_head(shared), self.severity_head(shared)
+
+
+# ── Data ──────────────────────────────────────────────────────────────────────────
+
+def _stratify(frame):
+    counts = frame["wound_type"].value_counts()
+    return frame["wound_type"] if (counts >= 2).all() else None
+
+
+def build_loaders(csv_path, img_root, batch_size, seed=42):
+    df = pd.read_csv(csv_path)
+    if "location_idx" not in df.columns:
+        df["location_idx"] = df["location"].apply(
+            lambda x: BODY_LOCATIONS.index(x) if x in BODY_LOCATIONS else 0
+        )
+    if "severity" not in df.columns:
+        df["severity"] = SEVERITY_UNKNOWN
+
+    df["_base"] = df["image_path"].apply(
+        lambda p: re.sub(r"_\d+\.(jpg|jpeg|png)$", "", p.replace("\\", "/"), flags=re.IGNORECASE)
+    )
+    bases = df[["_base", "wound_type"]].drop_duplicates("_base")
+    train_bases, temp = train_test_split(bases, test_size=0.30, stratify=_stratify(bases), random_state=seed)
+    val_bases, test_bases = train_test_split(temp, test_size=0.50, stratify=_stratify(temp), random_state=seed)
+
+    train_df = df[df["_base"].isin(train_bases["_base"])].drop(columns="_base")
+    val_df   = df[df["_base"].isin(val_bases["_base"])].drop(columns="_base")
+    test_df  = df[df["_base"].isin(test_bases["_base"])].drop(columns="_base")
+
+    train_ds = WoundDataset(train_df, img_root, TRAIN_TRANSFORM)
+    val_ds   = WoundDataset(val_df,   img_root, VAL_TRANSFORM)
+    test_ds  = WoundDataset(test_df,  img_root, VAL_TRANSFORM)
+
+    labels       = train_ds.df["wound_type"].map(WOUND_CLASSES.index).to_numpy()
+    class_counts = np.bincount(labels, minlength=len(WOUND_CLASSES))
+    weights      = 1.0 / class_counts[labels]
+    sampler      = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=sampler,  num_workers=4, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,    num_workers=4, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False,    num_workers=4, pin_memory=True)
+    return train_loader, val_loader, test_loader
+
+
+# ── MixUp / CutMix ───────────────────────────────────────────────────────────────
+
+def mixup(imgs, labels, alpha=0.4):
+    lam = np.random.beta(alpha, alpha)
+    idx = torch.randperm(imgs.size(0), device=imgs.device)
+    return lam * imgs + (1 - lam) * imgs[idx], labels, labels[idx], lam
+
+
+def cutmix(imgs, labels, alpha=1.0):
+    lam = np.random.beta(alpha, alpha)
+    idx = torch.randperm(imgs.size(0), device=imgs.device)
+    B, C, H, W = imgs.shape
+    cut_rat = np.sqrt(1 - lam)
+    cut_w, cut_h = int(W * cut_rat), int(H * cut_rat)
+    cx, cy = np.random.randint(W), np.random.randint(H)
+    x1, x2 = max(cx - cut_w // 2, 0), min(cx + cut_w // 2, W)
+    y1, y2 = max(cy - cut_h // 2, 0), min(cy + cut_h // 2, H)
+    mixed = imgs.clone()
+    mixed[:, :, y1:y2, x1:x2] = imgs[idx, :, y1:y2, x1:x2]
+    lam = 1 - (x2 - x1) * (y2 - y1) / (W * H)
+    return mixed, labels, labels[idx], lam
+
+
+def mix_loss(criterion, logits, a, b, lam):
+    return lam * criterion(logits, a) + (1 - lam) * criterion(logits, b)
+
+
+def multitask_loss(wound_logits, sev_logits, wound_labels, sev_labels,
+                   wound_crit, sev_crit, sev_weight=0.3):
+    wound_loss = wound_crit(wound_logits, wound_labels)
+    sev_mask   = sev_labels >= 0
+    if sev_mask.any():
+        return wound_loss + sev_weight * sev_crit(sev_logits[sev_mask], sev_labels[sev_mask]), wound_loss
+    return wound_loss, wound_loss
+
+
+# ── Train / val loops ─────────────────────────────────────────────────────────────
+
+def train_one_epoch(model, loader, optimizer, wound_crit, sev_crit, device):
+    model.train()
+    total_loss, correct, total = 0.0, 0, 0
+    bar = tqdm(loader, desc="  train", leave=False, unit="batch")
+    for imgs, locs, labels, severity in bar:
+        imgs, locs, labels, severity = imgs.to(device), locs.to(device), labels.to(device), severity.to(device)
+        optimizer.zero_grad()
+        if np.random.rand() > 0.5:
+            imgs, la, lb, lam = (mixup if np.random.rand() > 0.5 else cutmix)(imgs, labels)
+            wound_logits, _ = model(imgs, locs)
+            loss = mix_loss(wound_crit, wound_logits, la, lb, lam)
+            correct += (lam * (wound_logits.argmax(1) == la).float()
+                        + (1 - lam) * (wound_logits.argmax(1) == lb).float()).sum().item()
+        else:
+            wound_logits, sev_logits = model(imgs, locs)
+            loss, _ = multitask_loss(wound_logits, sev_logits, labels, severity, wound_crit, sev_crit)
+            correct += (wound_logits.argmax(1) == labels).sum().item()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        total_loss += loss.item() * imgs.size(0)
+        total      += imgs.size(0)
+        bar.set_postfix(loss=f"{total_loss/total:.4f}", acc=f"{correct/total:.3f}")
+    return total_loss / total, correct / total
+
+
+def val_one_epoch(model, loader, wound_crit, sev_crit, device):
+    model.eval()
+    total_loss, correct, total = 0.0, 0, 0
+    with torch.no_grad():
+        bar = tqdm(loader, desc="    val", leave=False, unit="batch")
+        for imgs, locs, labels, severity in bar:
+            imgs, locs, labels, severity = imgs.to(device), locs.to(device), labels.to(device), severity.to(device)
+            wound_logits, sev_logits = model(imgs, locs)
+            loss, _ = multitask_loss(wound_logits, sev_logits, labels, severity, wound_crit, sev_crit)
+            total_loss += loss.item() * imgs.size(0)
+            correct    += (wound_logits.argmax(1) == labels).sum().item()
+            total      += imgs.size(0)
+            bar.set_postfix(loss=f"{total_loss/total:.4f}", acc=f"{correct/total:.3f}")
+    return total_loss / total, correct / total
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────────
+
+def main(args):
+    device = get_device()
+    train_loader, val_loader, test_loader = build_loaders(args.data_csv, args.img_root, args.batch_size)
+
+    model = WoundScope(num_classes=len(WOUND_CLASSES)).to(device)
+    model.load_backbone(args.backbone_ckpt, device)
+
+    wound_crit = nn.CrossEntropyLoss(label_smoothing=0.1)
+    sev_crit   = nn.CrossEntropyLoss()
+
+    # Phase 1: freeze backbone, warm up heads
+    print("\n--- Phase 1: Head warm-up (backbone frozen, 5 epochs) ---")
+    for p in model.backbone.parameters():
+        p.requires_grad = False
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad], lr=1e-3, weight_decay=1e-4
+    )
+    for ep in range(5):
+        tl, ta = train_one_epoch(model, train_loader, optimizer, wound_crit, sev_crit, device)
+        vl, va = val_one_epoch(model, val_loader, wound_crit, sev_crit, device)
+        print(f"  Epoch {ep+1}/5  train_acc={ta:.3f}  val_acc={va:.3f}")
+
+    # Phase 2: unfreeze all, full fine-tune
+    print(f"\n--- Phase 2: Full fine-tune ({args.epochs} epochs, patience={args.patience}) ---")
+    for p in model.parameters():
+        p.requires_grad = True
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
+    def lr_lambda(ep):
+        warmup = 5
+        if ep < warmup:
+            return (ep + 1) / warmup
+        progress = (ep - warmup) / max(args.epochs - warmup, 1)
+        return 0.5 * (1 + np.cos(np.pi * progress))
+
+    scheduler    = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    best_val_acc = 0.0
+    no_improve   = 0
+    train_losses, val_losses, val_accs = [], [], []
+    os.makedirs("models",  exist_ok=True)
+    os.makedirs("outputs", exist_ok=True)
+
+    for ep in range(args.epochs):
+        t0     = time.time()
+        lr_now = optimizer.param_groups[0]["lr"]
+        tl, ta = train_one_epoch(model, train_loader, optimizer, wound_crit, sev_crit, device)
+        vl, va = val_one_epoch(model, val_loader, wound_crit, sev_crit, device)
+        scheduler.step()
+        train_losses.append(tl); val_losses.append(vl); val_accs.append(va)
+        print(f"Epoch {ep+1:3d}/{args.epochs}  "
+              f"train_loss={tl:.4f} train_acc={ta:.3f}  "
+              f"val_loss={vl:.4f} val_acc={va:.3f}  "
+              f"lr={lr_now:.2e}  {time.time()-t0:.0f}s")
+
+        if va > best_val_acc:
+            best_val_acc = va; no_improve = 0
+            save_checkpoint(
+                {"model_state": model.state_dict(), "arch": "woundcnn_v1",
+                 "epoch": ep + 1, "version": "v3", "num_classes": len(WOUND_CLASSES)},
+                "models/woundscope_v3.pth",
+            )
+            print(f"  ✓ New best (val_acc={va:.3f})")
+        else:
+            no_improve += 1
+            if no_improve >= args.patience:
+                print(f"\nEarly stopping at epoch {ep+1}")
+                break
+
+    plot_training_curves(train_losses, val_losses, val_accs, "outputs/v3_curves.png")
+
+    # Test evaluation
+    print("\n--- Test Set Evaluation ---")
+    ckpt = torch.load("models/woundscope_v3.pth", map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    acc, f1, preds, labels, sev_acc, probs_arr, sev_preds, sev_labels = evaluate(
+        lambda imgs, locs: model(imgs, locs), test_loader, device
+    )
+    print(f"Test Accuracy: {acc:.4f}  Macro-F1: {f1:.4f}")
+    print_report(preds, labels, probs=probs_arr,
+                 sev_preds=sev_preds if sev_labels else None,
+                 sev_labels=sev_labels if sev_labels else None,
+                 out_path="outputs/eval_v3.txt")
+    plot_confusion_matrix(preds, labels, out_path="outputs/confusion_matrix.png")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_csv",      default="dataset/labels.csv")
+    parser.add_argument("--img_root",      default="dataset/wound_images")
+    parser.add_argument("--backbone_ckpt", default="models/backbone_pretrained.pth")
+    parser.add_argument("--epochs",        type=int,   default=100)
+    parser.add_argument("--batch_size",    type=int,   default=32)
+    parser.add_argument("--lr",            type=float, default=1e-4)
+    parser.add_argument("--patience",      type=int,   default=20)
+    args = parser.parse_args()
+    main(args)
