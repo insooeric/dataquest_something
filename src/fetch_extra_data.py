@@ -120,6 +120,15 @@ def _stable_hash(s):
     return hashlib.md5(s.encode()).hexdigest()[:16]
 
 
+def _content_hash(path):
+    """MD5 of file contents — same image from different sources gets same hash."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
 def _normalise(s):
     """Lowercase, strip path separators noise, collapse separators to _."""
     return re.sub(r"[\s\-]+", "_", s.lower())
@@ -293,7 +302,7 @@ def scan_yolo_dataset(root, img_root, debug=False):
 
             dest_folder = os.path.join(img_root, wound_type)
             os.makedirs(dest_folder, exist_ok=True)
-            dest_file = os.path.join(dest_folder, f"ext_{_stable_hash(img_path)}.jpg")
+            dest_file = os.path.join(dest_folder, f"ext_{_content_hash(img_path)}.jpg")
             if not os.path.exists(dest_file):
                 shutil.copy2(img_path, dest_file)
 
@@ -340,7 +349,7 @@ def scan_directory(root, img_root, debug=False):
 
             dest_folder = os.path.join(img_root, wound_type)
             os.makedirs(dest_folder, exist_ok=True)
-            dest_file = os.path.join(dest_folder, f"ext_{_stable_hash(full)}.jpg")
+            dest_file = os.path.join(dest_folder, f"ext_{_content_hash(full)}.jpg")
             if not os.path.exists(dest_file):
                 shutil.copy2(full, dest_file)
 
