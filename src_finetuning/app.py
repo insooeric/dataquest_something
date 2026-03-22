@@ -27,7 +27,6 @@ except ImportError:
     pass
 
 import torch.nn as nn
-import torchvision.models as tvm
 
 from data_loader import (
     WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS,
@@ -43,10 +42,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-V3_CKPT       = "models/woundscope_v3.pth"
-V3_CKPT_TMP   = "/tmp/woundscope_v3.pth"
-BASELINE_CKPT = "models/baseline_model.pth"
-HF_REPO_ID    = "geek933/woundscope"
+V3_CKPT     = "models/woundscope_v3.pth"
+V3_CKPT_TMP = "/tmp/woundscope_v3.pth"
+HF_REPO_ID  = "geek933/woundscope"
 HF_TOKEN      = os.environ.get("HF_TOKEN", "")
 HF_MODEL      = "mistralai/Mistral-7B-Instruct-v0.3"
 
@@ -182,50 +180,29 @@ def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if os.path.exists(V3_CKPT):
-        ckpt_path, use_v3 = V3_CKPT, True
+        ckpt_path = V3_CKPT
     elif os.path.exists(V3_CKPT_TMP):
-        ckpt_path, use_v3 = V3_CKPT_TMP, True
-    elif os.path.exists(BASELINE_CKPT):
-        ckpt_path, use_v3 = BASELINE_CKPT, False
+        ckpt_path = V3_CKPT_TMP
     else:
-        return None, None, None, None, None
+        return None, None, None, None
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-    if use_v3:
-        from finetune import WoundScope
-        saved_num_classes = ckpt.get("num_classes", len(WOUND_CLASSES))
-        model = WoundScope(num_classes=saved_num_classes)
-        try:
-            model.load_state_dict(ckpt["model_state"])
-        except RuntimeError:
-            st.error(
-                "Checkpoint is from an old architecture. "
-                "Please retrain with `train.py` to use the current model."
-            )
-            return None, None, None, None, None
-        model.to(device).eval()
-        gradcam    = GradCAM(model, model.backbone.stage4[-1])
-        model_name = "WoundCNN-v1 + location (from scratch)"
-    else:
-        import timm
-        arch = ckpt.get("arch", "resnet50")
-        if arch == "efficientnet_b0":
-            model = timm.create_model("efficientnet_b0", pretrained=False, num_classes=len(WOUND_CLASSES))
-            model.load_state_dict(ckpt["model_state"])
-            model.to(device).eval()
-            gradcam = GradCAM(model, model.blocks[-1])
-        else:
-            model = tvm.resnet50(weights=None)
-            model.fc = nn.Linear(model.fc.in_features, len(WOUND_CLASSES))
-            model.load_state_dict(ckpt["model_state"])
-            model.to(device).eval()
-            gradcam = GradCAM(model, model.layer4[-1])
-        model_name = f"{arch} (baseline)"
+    from finetune import WoundScope
+    saved_num_classes = ckpt.get("num_classes", len(WOUND_CLASSES))
+    model = WoundScope(num_classes=saved_num_classes)
+    try:
+        model.load_state_dict(ckpt["model_state"])
+    except RuntimeError:
+        st.error("Checkpoint is from an old architecture. Please retrain with `finetune.py`.")
+        return None, None, None, None
+    model.to(device).eval()
+    gradcam    = GradCAM(model, model.backbone.stage4[-1])
+    model_name = "WoundCNN-v1 + location (from scratch)"
 
-    return model, gradcam, device, use_v3, model_name
+    return model, gradcam, device, model_name
 
 
 @st.cache_resource
@@ -246,12 +223,12 @@ def preprocess_image(file_bytes):
 
 # ── Inference ───────────────────────────────────────────────────────────────────
 
-def run_inference(model, img_tensor, loc_idx, device, use_v3, gradcam):
+def run_inference(model, img_tensor, loc_idx, device, gradcam):
     img_tensor = img_tensor.to(device)
     loc_tensor = torch.tensor([loc_idx], dtype=torch.long).to(device)
 
     with torch.no_grad():
-        out = model(img_tensor, loc_tensor) if use_v3 else model(img_tensor)
+        out = model(img_tensor, loc_tensor)
 
     if isinstance(out, tuple):
         wound_logits, sev_logits = out
@@ -368,10 +345,10 @@ def main():
     ensure_model()
     result = load_model()
     if result[0] is None:
-        st.error("No trained model found. Run `train.py` first.")
+        st.error("No trained model found. Run `finetune.py` first.")
         return
 
-    model, gradcam, device, use_v3, model_name = result
+    model, gradcam, device, model_name = result
     hf_client = get_hf_client()
 
     # ── Inputs ─────────────────────────────────────────────────────────────────
@@ -415,7 +392,7 @@ def main():
     # ── Inference ──────────────────────────────────────────────────────────────
     with st.spinner("Running inference..."):
         pred_class, confidence, probs, cam, sev_idx = run_inference(
-            model, img_tensor, loc_idx, device, use_v3, gradcam
+            model, img_tensor, loc_idx, device, gradcam
         )
 
     color = WOUND_COLORS.get(pred_class, "#888888")
