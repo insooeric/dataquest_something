@@ -33,10 +33,9 @@ KAGGLE_DATASETS = [
     "ibrahimfateen/wound-classification",
     "laithjj/diabetic-foot-ulcer-dfu",
     "sinemgokoz/pressure-ulcers-stages",
+    "divyanshmahajan2311/pressure-ulcers-detection",
     "leoscode/wound-segmentation-images",
     "yasinpratomo/wound-dataset",
-    "rashik/skin-burn-image-dataset",
-    "devzohaib/skin-burn-classification",
 ]
 
 # ── Keyword → wound type ────────────────────────────────────────────────────────
