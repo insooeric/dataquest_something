@@ -2,7 +2,7 @@
 
 AI-assisted wound classification demo. Upload a wound image, select a body location, and get a predicted wound type with confidence score, Grad-CAM attention heatmap, and an AI-generated clinical note.
 
-**[Live Demo](https://dataquestsomething-ycrl3kx5ucbabrfcndgyot.streamlit.app/)**
+**[Live Demo](https://dataquestsomething-igpqi77pcnsz4o3garx334.streamlit.app/)**
 
 ---
 
@@ -15,7 +15,7 @@ AI-assisted wound classification demo. Upload a wound image, select a body locat
 
 ## Model
 
-ViT-Small (vit_small_patch16_224) fine-tuned with location embeddings. Trained on ~6,600 images across 5 Kaggle datasets. Test accuracy: 97.3%.
+Custom CNN built from scratch — ResNet-style backbone (4 stages, 64→512 channels) with location embeddings and multi-task heads for wound classification and severity grading. No pretrained weights. Trained on ~6,600 images across 5 Kaggle datasets. Test accuracy: 96.0% (weighted), AUC-ROC: 0.992.
 
 ---
 
