@@ -211,7 +211,7 @@ def load_model():
             )
             return None, None, None, None, None
         model.to(device).eval()
-        gradcam    = ViTGradCAM(model.backbone)
+        gradcam    = ViTGradCAM(model)
         model_name = f"ViT-Small + location · {arch}"
     else:
         import timm
@@ -272,7 +272,7 @@ def run_inference(model, img_tensor, loc_idx, device, use_v3, gradcam):
 
     # Grad-CAM (run backbone only — no tuple issue)
     img_tensor = img_tensor.detach().requires_grad_(True)
-    cam, _ = gradcam.generate(img_tensor, class_idx=pred_idx)
+    cam, _ = gradcam.generate(img_tensor, loc_tensor, class_idx=pred_idx)
 
     return WOUND_CLASSES[pred_idx], float(probs[pred_idx]), probs, cam, sev_idx
 
