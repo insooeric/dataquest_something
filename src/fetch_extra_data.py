@@ -86,6 +86,7 @@ CLASS_MAP = {
     "scald":      "Burns",
     "thermal":    "Burns",
     "laceration": "Laceration",
+    "laseration": "Laceration",
     "lacerat":    "Laceration",
     "abrasion":   "Laceration",
     "traumatic":  "Laceration",
