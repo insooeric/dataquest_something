@@ -162,6 +162,23 @@ def val_one_epoch(model, loader, criterion, device):
     return total_loss / total, correct / total
 
 
+# ── Plotting ─────────────────────────────────────────────────────────────────────
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+def _plot_curves(train_losses, val_losses, val_accs, out_path):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    ax1.plot(train_losses, label="Train Loss")
+    ax1.plot(val_losses,   label="Val Loss")
+    ax1.set(xlabel="Epoch", ylabel="Loss", title="Pretrain Loss Curves"); ax1.legend()
+    ax2.plot(val_accs, color="green", label="Val Accuracy")
+    ax2.set(xlabel="Epoch", ylabel="Accuracy", title="Pretrain Val Accuracy"); ax2.legend()
+    plt.tight_layout()
+    plt.savefig(out_path); plt.close()
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────────
 
 def get_device():
@@ -192,16 +209,19 @@ def main(args):
     scheduler  = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     best_acc   = 0.0
     no_improve = 0
+    train_losses, val_losses, val_accs = [], [], []
 
-    os.makedirs("models", exist_ok=True)
+    os.makedirs("models",  exist_ok=True)
+    os.makedirs("outputs", exist_ok=True)
     print(f"\n--- Pretraining WoundCNN from scratch ({args.epochs} epochs) ---")
 
     for ep in range(args.epochs):
-        t0    = time.time()
+        t0     = time.time()
         lr_now = optimizer.param_groups[0]["lr"]
         tl, ta = train_one_epoch(model, train_loader, optimizer, criterion, device)
         vl, va = val_one_epoch(model, val_loader, criterion, device)
         scheduler.step()
+        train_losses.append(tl); val_losses.append(vl); val_accs.append(va)
         print(f"Epoch {ep+1:3d}/{args.epochs}  "
               f"train_loss={tl:.4f} train_acc={ta:.3f}  "
               f"val_loss={vl:.4f} val_acc={va:.3f}  "
@@ -220,8 +240,10 @@ def main(args):
                 print(f"\nEarly stopping at epoch {ep+1}")
                 break
 
+    _plot_curves(train_losses, val_losses, val_accs, "outputs/pretrain_curves.png")
     print(f"\nPretraining complete. Best val_acc: {best_acc:.3f}")
-    print("Backbone saved to: models/backbone_pretrained.pth")
+    print("Backbone saved to:      models/backbone_pretrained.pth")
+    print("Training curves saved:  outputs/pretrain_curves.png")
 
 
 if __name__ == "__main__":
