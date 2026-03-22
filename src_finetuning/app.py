@@ -1,7 +1,7 @@
 """
 WoundScope – Streamlit Demo App
 
-Run: streamlit run src/app.py
+Run: streamlit run src_finetuning/app.py
 """
 
 import os
@@ -17,8 +17,9 @@ import plotly.graph_objects as go
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src_pretrain"))
 
-# Load .env from repo root (one level up from src/)
+# Load .env from repo root
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -32,7 +33,7 @@ from data_loader import (
     WOUND_CLASSES, BODY_LOCATIONS, VAL_TRANSFORM, NUM_LOCATIONS,
     SEVERITY_NAMES_BY_TYPE,
 )
-from utils import GradCAM, ViTGradCAM, overlay_gradcam
+from utils import GradCAM, overlay_gradcam
 
 # ── Config ──────────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -194,7 +195,7 @@ def load_model():
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     if use_v3:
-        from train import WoundScope
+        from finetune import WoundScope
         saved_num_classes = ckpt.get("num_classes", len(WOUND_CLASSES))
         model = WoundScope(num_classes=saved_num_classes)
         try:

@@ -1,13 +1,13 @@
 """
-WoundScope v3 – ViT-Small + location embedding, multi-task learning.
+WoundScope – Custom CNN + location embedding, multi-task learning.
 
 Wound-type classification (7 classes) + severity grading (4-level ordinal)
 via a shared backbone and two separate output heads.
 
 Usage:
-    python3 src/train_v3.py --data_csv dataset/labels.csv \\
-                             --img_root dataset/wound_images \\
-                             --epochs 100 --batch_size 32
+    python src/train.py --data_csv dataset/labels.csv \\
+                        --img_root dataset/wound_images \\
+                        --epochs 100 --batch_size 32
 """
 
 import argparse
@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler
-import timm
 import torchvision.transforms as T
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -55,15 +55,73 @@ TRAIN_TRANSFORM_V3 = T.Compose([
 
 # ── Model ───────────────────────────────────────────────────────────────────────
 
-class WoundScope(nn.Module):
+class ResBlock(nn.Module):
+    """Standard residual block with optional downsampling projection."""
+
+    def __init__(self, in_ch, out_ch, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(out_ch)
+        self.downsample = (
+            nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_ch),
+            ) if stride != 1 or in_ch != out_ch else nn.Identity()
+        )
+
+    def forward(self, x):
+        return F.relu(self.bn2(self.conv2(F.relu(self.bn1(self.conv1(x)), inplace=True)))
+                      + self.downsample(x), inplace=True)
+
+
+def _make_stage(in_ch, out_ch, num_blocks, stride=1):
+    blocks = [ResBlock(in_ch, out_ch, stride=stride)]
+    for _ in range(1, num_blocks):
+        blocks.append(ResBlock(out_ch, out_ch))
+    return nn.Sequential(*blocks)
+
+
+class WoundCNN(nn.Module):
     """
-    ViT-Small backbone + location embedding.
-    Two output heads:
-      - wound_head   → (B, num_classes)   wound-type logits
-      - severity_head → (B, num_severity)  severity logits
+    Custom CNN backbone trained from scratch.
+      Input:  (B, 3, 224, 224)
+      Output: (B, 512)
     """
 
-    def __init__(self, arch="vit_small_patch16_224",
+    def __init__(self):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(3, stride=2, padding=1),
+        )
+        self.stage1 = _make_stage(64,  64,  3, stride=1)
+        self.stage2 = _make_stage(64,  128, 3, stride=2)
+        self.stage3 = _make_stage(128, 256, 3, stride=2)
+        self.stage4 = _make_stage(256, 512, 3, stride=2)
+        self.pool   = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        return self.pool(x).flatten(1)  # (B, 512)
+
+
+class WoundScope(nn.Module):
+    """
+    Custom CNN backbone + location embedding, trained from scratch.
+    Two output heads:
+      - wound_head    → (B, num_classes)  wound-type logits
+      - severity_head → (B, num_severity) severity logits
+    """
+
+    def __init__(self, arch="woundcnn_v1",
                  num_classes=len(WOUND_CLASSES),
                  num_locations=NUM_LOCATIONS,
                  loc_emb_dim=32,
@@ -72,8 +130,8 @@ class WoundScope(nn.Module):
                  num_severity=NUM_SEVERITY):
         super().__init__()
 
-        self.backbone    = timm.create_model(arch, pretrained=True, num_classes=0)
-        self.feat_dim    = self.backbone.num_features   # 384 for vit_small
+        self.backbone  = WoundCNN()
+        self.feat_dim  = 512
 
         self.loc_embedding = nn.Embedding(num_locations, loc_emb_dim)
 
@@ -88,8 +146,8 @@ class WoundScope(nn.Module):
         self.severity_head = nn.Linear(hidden_dim, num_severity)
 
     def forward(self, img, loc_idx):
-        img_feat = self.backbone(img)                           # (B, feat_dim)
-        loc_feat = self.loc_embedding(loc_idx)                  # (B, loc_emb_dim)
+        img_feat = self.backbone(img)                          # (B, 512)
+        loc_feat = self.loc_embedding(loc_idx)                 # (B, 32)
         shared   = self.shared(torch.cat([img_feat, loc_feat], dim=1))
         return self.wound_head(shared), self.severity_head(shared)
 
@@ -254,29 +312,13 @@ def main(args):
         args.data_csv, args.img_root, args.batch_size
     )
 
-    model = WoundScope(arch=args.arch, num_classes=len(WOUND_CLASSES)).to(device)
-    print(f"Backbone: {args.arch}  |  Feature dim: {model.feat_dim}  |  Classes: {len(WOUND_CLASSES)}")
+    model = WoundScope(num_classes=len(WOUND_CLASSES)).to(device)
+    print(f"Backbone: WoundCNN-v1 (from scratch)  |  Feature dim: {model.feat_dim}  |  Classes: {len(WOUND_CLASSES)}")
 
     wound_criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     sev_criterion   = nn.CrossEntropyLoss()
 
-    # Phase 1: warm up classifier heads only (3 epochs)
-    print("\n--- Phase 1: Head warm-up (3 epochs) ---")
-    for p in model.backbone.parameters():
-        p.requires_grad = False
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=1e-3, weight_decay=1e-4
-    )
-    for ep in range(3):
-        tl, ta = train_one_epoch(model, train_loader, optimizer, wound_criterion, sev_criterion, device)
-        vl, va = val_one_epoch(model, val_loader, wound_criterion, sev_criterion, device)
-        print(f"  Epoch {ep+1}/3  train_acc={ta:.3f}  val_acc={va:.3f}")
-
-    # Phase 2: fine-tune all layers
-    print(f"\n--- Phase 2: Full fine-tune ({args.epochs} epochs, patience={args.patience}) ---")
-    for p in model.parameters():
-        p.requires_grad = True
-
+    print(f"\n--- Training from scratch ({args.epochs} epochs, patience={args.patience}) ---")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
     def lr_lambda(ep):
@@ -314,7 +356,7 @@ def main(args):
             best_val_acc = va
             no_improve   = 0
             save_checkpoint(
-                {"model_state": model.state_dict(), "arch": args.arch,
+                {"model_state": model.state_dict(), "arch": "woundcnn_v1",
                  "epoch": ep + 1, "version": "v3", "num_classes": len(WOUND_CLASSES)},
                 "models/woundscope_v3.pth",
             )
@@ -356,10 +398,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_csv",   default="dataset/labels.csv")
     parser.add_argument("--img_root",   default="dataset/wound_images")
-    parser.add_argument("--arch",       default="vit_small_patch16_224")
     parser.add_argument("--epochs",     type=int,   default=100)
     parser.add_argument("--batch_size", type=int,   default=32)
-    parser.add_argument("--lr",         type=float, default=5e-5)
+    parser.add_argument("--lr",         type=float, default=3e-4)
     parser.add_argument("--patience",   type=int,   default=20)
     args = parser.parse_args()
     main(args)
