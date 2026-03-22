@@ -3,8 +3,7 @@ _tmp/
 __pycache__
 _img/
 dataset/
-models/
-outputs/
 *.pth
 *.pyc
 .claude
+.env

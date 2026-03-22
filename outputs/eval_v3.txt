@@ -1,0 +1,35 @@
+Classification Report:
+              precision    recall  f1-score   support
+
+    Diabetic       0.93      0.98      0.95       368
+    Pressure       0.99      0.93      0.96       408
+    Surgical       0.95      0.95      0.95        62
+      Venous       0.97      1.00      0.99        74
+    Arterial       0.00      0.00      0.00         0
+       Burns       0.90      0.90      0.90        20
+  Laceration       0.90      0.93      0.92        58
+
+    accuracy                           0.96       990
+   macro avg       0.81      0.81      0.81       990
+weighted avg       0.96      0.96      0.96       990
+
+Confusion Matrix (rows=true, cols=pred):
+  Diabetic  Pressure  Surgical    Venous  Arterial     Burns  Lacerati
+  Diabetic       360         2         0         2         0         0         4
+  Pressure        22       381         2         0         0         1         2
+  Surgical         2         0        59         0         0         1         0
+    Venous         0         0         0        74         0         0         0
+  Arterial         0         0         0         0         0         0         0
+     Burns         2         0         0         0         0        18         0
+  Lacerati         3         0         1         0         0         0        54
+
+AUC-ROC (macro avg): 0.9923
+  Diabetic       0.9952
+  Pressure       0.9961
+  Surgical       0.9997
+  Venous         0.9999
+  Arterial        N/A
+  Burns          0.9643
+  Laceration     0.9987
+
+Severity — acc: 0.8095  kappa: 0.8292  MAE: 0.2711  (n=273)

@@ -12,7 +12,8 @@
       "Bash(.venv/Scripts/pip install:*)",
       "Bash(.venv/Scripts/python generate_report.py)",
       "Bash(.venv/Scripts/python -c \":*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ]
   }
 }

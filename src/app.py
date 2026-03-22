@@ -18,6 +18,13 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+# Load .env from repo root (one level up from src/)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+except ImportError:
+    pass
+
 import torch.nn as nn
 import torchvision.models as tvm
 
@@ -40,7 +47,7 @@ V3_CKPT_TMP   = "/tmp/woundscope_v3.pth"
 BASELINE_CKPT = "models/baseline_model.pth"
 HF_REPO_ID    = "geek933/woundscope"
 HF_TOKEN      = os.environ.get("HF_TOKEN", "")
-HF_MODEL      = "mistralai/Mistral-7B-Instruct-v0.1"
+HF_MODEL      = "mistralai/Mistral-7B-Instruct-v0.3"
 
 
 def ensure_model():
@@ -96,80 +103,215 @@ LOCATION_LABELS = {
 
 st.markdown("""
 <style>
-    #MainMenu, footer { visibility: hidden; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-    .disclaimer {
-        border-left: 3px solid #f0a500;
-        padding: 0.45rem 0.9rem;
-        border-radius: 0 6px 6px 0;
-        font-size: 0.82rem;
-        color: #c8a84b;
-        background: rgba(240,165,0,0.08);
-        margin-bottom: 0.5rem;
+    #MainMenu, footer, header { visibility: hidden; }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+    /* ── Page background ── */
+    .stApp { background: #0d1117; }
+
+    /* ── Hero header ── */
+    .hero {
+        padding: 2.2rem 0 1.4rem;
+        border-bottom: 1px solid rgba(255,255,255,0.07);
+        margin-bottom: 1.8rem;
+    }
+    .hero-title {
+        font-size: 2rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: #f0f6fc;
+        margin: 0 0 0.25rem;
+    }
+    .hero-sub {
+        font-size: 0.88rem;
+        color: #7d8590;
+        margin: 0;
+    }
+    .hero-badge {
+        display: inline-block;
+        margin-top: 0.8rem;
+        padding: 0.22rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        background: rgba(240,165,0,0.1);
+        color: #e3a84e;
+        border: 1px solid rgba(240,165,0,0.2);
     }
 
+    /* ── Section labels ── */
+    .section-label {
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #7d8590;
+        margin-bottom: 0.55rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+
+    /* ── Prediction card ── */
     .pred-card {
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.1);
-        padding: 1.4rem 1.6rem;
-        margin-bottom: 1rem;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.08);
+        padding: 1.6rem;
+        margin-bottom: 1.2rem;
+        background: rgba(255,255,255,0.03);
     }
     .pred-label {
-        font-size: 0.78rem;
-        letter-spacing: 0.08em;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.12em;
         text-transform: uppercase;
-        opacity: 0.6;
-        margin-bottom: 0.2rem;
+        color: #7d8590;
+        margin-bottom: 0.5rem;
     }
     .pred-class {
-        font-size: 1.9rem;
+        font-size: 1.75rem;
         font-weight: 700;
-        line-height: 1.1;
+        letter-spacing: -0.02em;
+        line-height: 1.15;
     }
-    .pred-conf {
-        font-size: 3.2rem;
+    .pred-divider {
+        height: 1px;
+        background: rgba(255,255,255,0.07);
+        margin: 1rem 0;
+    }
+    .pred-metrics {
+        display: flex;
+        gap: 1.5rem;
+        align-items: flex-end;
+        margin-bottom: 0.4rem;
+    }
+    .pred-metric {
+        display: flex;
+        flex-direction: column;
+    }
+    .pred-metric-val {
+        font-size: 2.4rem;
         font-weight: 800;
+        letter-spacing: -0.03em;
         line-height: 1;
-        margin: 0.3rem 0 0.1rem;
     }
-    .pred-sub {
-        font-size: 0.78rem;
-        opacity: 0.5;
+    .pred-metric-lbl {
+        font-size: 0.72rem;
+        color: #7d8590;
+        margin-top: 0.2rem;
+        font-weight: 400;
     }
     .pred-desc {
-        margin-top: 0.9rem;
-        font-size: 0.85rem;
-        opacity: 0.8;
-        line-height: 1.5;
+        margin-top: 1rem;
+        font-size: 0.84rem;
+        color: #8b949e;
+        line-height: 1.6;
     }
+
+    /* ── Severity badge ── */
     .severity-badge {
-        display: inline-block;
-        margin-top: 0.6rem;
-        padding: 0.25rem 0.7rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin-top: 0.7rem;
+        padding: 0.3rem 0.8rem;
+        border-radius: 6px;
+        font-size: 0.76rem;
         font-weight: 600;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.03em;
+        border: 1px solid;
+    }
+    .severity-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
     }
 
-    .section-label {
-        font-size: 0.72rem;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        opacity: 0.45;
-        margin-bottom: 0.6rem;
-    }
-
-    .clinical-note {
-        border-left: 3px solid rgba(255,255,255,0.2);
-        padding: 0.8rem 1rem;
-        border-radius: 0 8px 8px 0;
+    /* ── Location pill ── */
+    .location-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-top: 0.5rem;
+        padding: 0.28rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.76rem;
+        font-weight: 500;
+        color: #8b949e;
         background: rgba(255,255,255,0.04);
-        font-size: 0.88rem;
-        line-height: 1.7;
+        border: 1px solid rgba(255,255,255,0.08);
     }
 
-    hr { margin: 1rem 0; opacity: 0.15; }
+    /* ── Image frame ── */
+    .img-frame {
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: #161b22;
+    }
+
+    /* ── Clinical note ── */
+    .clinical-note {
+        border-left: 2px solid #1f6feb;
+        padding: 0.9rem 1.1rem;
+        border-radius: 0 10px 10px 0;
+        background: rgba(31,111,235,0.06);
+        font-size: 0.86rem;
+        line-height: 1.75;
+        color: #c9d1d9;
+    }
+
+    /* ── Cam label ── */
+    .cam-label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #7d8590;
+        margin-bottom: 0.55rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .cam-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: #f85149;
+        flex-shrink: 0;
+    }
+
+    /* ── Streamlit tweaks ── */
+    div[data-testid="stFileUploader"] {
+        border: 1px dashed rgba(255,255,255,0.12) !important;
+        border-radius: 10px !important;
+        background: rgba(255,255,255,0.02) !important;
+        padding: 0.5rem !important;
+    }
+    div[data-testid="stSelectbox"] > div {
+        border-color: rgba(255,255,255,0.1) !important;
+        border-radius: 8px !important;
+        background: rgba(255,255,255,0.03) !important;
+    }
+    div[data-testid="stButton"] > button[kind="primary"] {
+        background: #1f6feb !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.02em !important;
+        padding: 0.6rem 1rem !important;
+        transition: background 0.15s !important;
+    }
+    div[data-testid="stButton"] > button[kind="primary"]:hover {
+        background: #388bfd !important;
+    }
+    div[data-testid="stButton"] > button:disabled {
+        background: rgba(255,255,255,0.06) !important;
+        color: #484f58 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -328,8 +470,8 @@ def generate_clinical_note(wound_type, location, confidence, severity_label, cli
 
 def prob_chart(probs, pred_class):
     colors = [
-        WOUND_COLORS.get(cls, "rgba(255,255,255,0.15)")
-        if cls == pred_class else "rgba(255,255,255,0.15)"
+        WOUND_COLORS.get(cls, "rgba(255,255,255,0.12)")
+        if cls == pred_class else "rgba(255,255,255,0.08)"
         for cls in WOUND_CLASSES
     ]
     fig = go.Figure(go.Bar(
@@ -337,20 +479,22 @@ def prob_chart(probs, pred_class):
         y=WOUND_CLASSES,
         orientation="h",
         marker_color=colors,
+        marker_line_width=0,
         text=[f"{p:.1%}" for p in probs],
         textposition="outside",
-        textfont=dict(size=12),
+        textfont=dict(size=11, color="#8b949e"),
         hoverinfo="skip",
     ))
-    bar_height = max(200, len(WOUND_CLASSES) * 32)
+    bar_height = max(200, len(WOUND_CLASSES) * 34)
     fig.update_layout(
-        margin=dict(l=0, r=40, t=4, b=4),
+        margin=dict(l=0, r=48, t=4, b=4),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(visible=False, range=[0, min(max(probs) * 1.25, 1.0)]),
-        yaxis=dict(tickfont=dict(size=12)),
+        xaxis=dict(visible=False, range=[0, min(max(probs) * 1.3, 1.0)]),
+        yaxis=dict(tickfont=dict(size=12, color="#8b949e"), tickcolor="rgba(0,0,0,0)"),
         height=bar_height,
         showlegend=False,
+        bargap=0.35,
     )
     return fig
 
@@ -358,21 +502,26 @@ def prob_chart(probs, pred_class):
 # ── Main UI ─────────────────────────────────────────────────────────────────────
 
 def main():
-    st.markdown("# 🩺 WoundScope")
+    # ── Hero ───────────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="hero">
+        <div class="hero-title">🩺 WoundScope</div>
+        <div class="hero-sub">AI-assisted wound classification · ViT-Small + location encoding</div>
+        <div class="hero-badge">⚠ Research demo only — not a medical device</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     ensure_model()
     result = load_model()
     if result[0] is None:
-        st.error("No trained model found. Run `train_baseline.py` or `train_v3.py` first.")
+        st.error("No trained model found. Run `train.py` first.")
         return
 
     model, gradcam, device, use_v3, model_name = result
     hf_client = get_hf_client()
 
-    st.divider()
-
     # ── Inputs ─────────────────────────────────────────────────────────────────
-    col_img, col_loc = st.columns([1, 1], gap="large")
+    col_img, col_loc = st.columns([3, 2], gap="large")
 
     with col_img:
         st.markdown('<div class="section-label">Wound Image</div>', unsafe_allow_html=True)
@@ -381,7 +530,7 @@ def main():
         )
         if uploaded:
             pil_img, img_tensor = preprocess_image(uploaded)
-            st.image(pil_img, width='stretch')
+            st.image(pil_img, use_container_width=True)
 
     with col_loc:
         st.markdown('<div class="section-label">Body Location</div>', unsafe_allow_html=True)
@@ -395,14 +544,14 @@ def main():
         loc_idx      = BODY_LOCATIONS.index(selected_loc)
         body_map_img = BODY_MAP_IMAGES.get(selected_loc)
         if body_map_img and os.path.exists(body_map_img):
-            st.image(body_map_img, width='stretch')
+            st.image(body_map_img, use_container_width=True)
 
     # ── Classify ───────────────────────────────────────────────────────────────
-    st.divider()
+    st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
     classify = st.button(
         "Classify Wound",
         type="primary",
-        width='stretch',
+        use_container_width=True,
         disabled=(uploaded is None),
     )
 
@@ -423,46 +572,55 @@ def main():
             severity_label = names[sev_idx]
 
     color = WOUND_COLORS.get(pred_class, "#888888")
-    st.divider()
+
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,0.07);margin:0 0 1.5rem'>", unsafe_allow_html=True)
 
     # ── Results ────────────────────────────────────────────────────────────────
     res_left, res_right = st.columns([1, 1], gap="large")
 
     with res_left:
         sev_badge = (
-            f'<div class="severity-badge" style="background:{color}33; color:{color};">'
-            f'{severity_label}</div>'
+            f'<div class="severity-badge" style="background:{color}18;color:{color};border-color:{color}44;">'
+            f'<span class="severity-dot" style="background:{color};"></span>{severity_label}</div>'
             if severity_label else ""
         )
+        loc_pill = (
+            f'<div class="location-pill">📍 {LOCATION_LABELS[selected_loc]}</div>'
+        )
         st.markdown(f"""
-        <div class="pred-card" style="border-color:{color}33; background:{color}0d;">
-            <div class="pred-label">Prediction</div>
+        <div class="pred-card" style="border-color:{color}30; background:linear-gradient(135deg,{color}08 0%,rgba(255,255,255,0.02) 100%);">
+            <div class="pred-label">Classification Result</div>
             <div class="pred-class" style="color:{color};">{pred_class} Wound</div>
-            <div class="pred-conf" style="color:{color};">{confidence:.0%}</div>
-            <div class="pred-sub">confidence</div>
+            <div class="pred-divider"></div>
+            <div class="pred-metrics">
+                <div class="pred-metric">
+                    <span class="pred-metric-val" style="color:{color};">{confidence:.0%}</span>
+                    <span class="pred-metric-lbl">Confidence</span>
+                </div>
+            </div>
             {sev_badge}
+            {loc_pill}
             <div class="pred-desc">{WOUND_DESCRIPTIONS.get(pred_class, '')}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        st.caption(f"Location: {LOCATION_LABELS[selected_loc]}")
-
-        st.markdown('<div class="section-label" style="margin-top:1rem;">Class Probabilities</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label" style="margin-top:1.2rem;">Class Probabilities</div>', unsafe_allow_html=True)
         st.plotly_chart(
             prob_chart(probs, pred_class),
-            width='stretch',
+            use_container_width=True,
             config={"displayModeBar": False, "scrollZoom": False, "staticPlot": True},
         )
 
     with res_right:
-        st.markdown('<div class="section-label">Grad-CAM · What the model saw</div>', unsafe_allow_html=True)
+        st.markdown('<div class="cam-label"><span class="cam-dot"></span>Grad-CAM · Model attention</div>', unsafe_allow_html=True)
         cam_resized = np.array(
             Image.fromarray((cam * 255).astype(np.uint8)).resize(
                 (pil_img.width, pil_img.height), Image.BILINEAR
             )
         ).astype(np.float32) / 255.0
         overlay = overlay_gradcam(pil_img, cam_resized)
-        st.image(overlay, width='stretch')
+        st.image(overlay, use_container_width=True)
 
         # Clinical note
         if hf_client:
@@ -471,14 +629,14 @@ def main():
                     pred_class, selected_loc, confidence, severity_label, hf_client
                 )
             if note:
-                st.markdown('<div class="section-label" style="margin-top:1rem;">Clinical Note</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-label" style="margin-top:1.2rem;">Clinical Note</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="clinical-note">{note}</div>', unsafe_allow_html=True)
 
     # ── Sidebar ────────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("### WoundScope")
         st.markdown(f"""
-**Architecture:** {model_name}
+**Model:** {model_name}
 
 **Classes ({len(WOUND_CLASSES)}):** {' · '.join(WOUND_CLASSES)}
 
