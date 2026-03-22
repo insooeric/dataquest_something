@@ -194,16 +194,51 @@ def load_model():
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
     if use_v3:
-        from train import WoundScope
+        import timm
+        saved_arch        = ckpt.get("arch", "woundcnn_v1")
         saved_num_classes = ckpt.get("num_classes", len(WOUND_CLASSES))
-        model = WoundScope(num_classes=saved_num_classes)
-        missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
-        if unexpected:
-            st.error("Checkpoint has unexpected keys — architecture mismatch.")
-            return None, None, None, None, None
-        model.to(device).eval()
-        gradcam    = GradCAM(model, model.backbone.stage4[-1])
-        model_name = "WoundCNN-v1 + location (from scratch)"
+
+        if saved_arch == "vit_small_patch16_224":
+            # ViT-Small based WoundScope (legacy checkpoint)
+            class _ViTWoundScope(nn.Module):
+                def __init__(self, num_classes, num_locations=NUM_LOCATIONS,
+                             loc_emb_dim=32, hidden_dim=256, dropout=0.4, num_severity=4):
+                    super().__init__()
+                    self.backbone      = timm.create_model("vit_small_patch16_224",
+                                                           pretrained=False, num_classes=0)
+                    self.feat_dim      = 384
+                    self.loc_embedding = nn.Embedding(num_locations, loc_emb_dim)
+                    fused_dim = self.feat_dim + loc_emb_dim
+                    self.shared = nn.Sequential(
+                        nn.LayerNorm(fused_dim),
+                        nn.Linear(fused_dim, hidden_dim),
+                        nn.GELU(),
+                        nn.Dropout(dropout),
+                    )
+                    self.wound_head    = nn.Linear(hidden_dim, num_classes)
+                    self.severity_head = nn.Linear(hidden_dim, num_severity)
+
+                def forward(self, img, loc_idx):
+                    img_feat = self.backbone(img)
+                    loc_feat = self.loc_embedding(loc_idx)
+                    shared   = self.shared(torch.cat([img_feat, loc_feat], dim=1))
+                    return self.wound_head(shared), self.severity_head(shared)
+
+            model   = _ViTWoundScope(num_classes=saved_num_classes)
+            model.load_state_dict(ckpt["model_state"])
+            model.to(device).eval()
+            gradcam    = ViTGradCAM(model)
+            model_name = "ViT-Small + location"
+        else:
+            from train import WoundScope
+            model = WoundScope(num_classes=saved_num_classes)
+            missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+            if unexpected:
+                st.error("Checkpoint has unexpected keys — architecture mismatch.")
+                return None, None, None, None, None
+            model.to(device).eval()
+            gradcam    = GradCAM(model, model.backbone.stage4[-1])
+            model_name = "WoundCNN-v1 + location (from scratch)"
     else:
         import timm
         arch = ckpt.get("arch", "resnet50")
